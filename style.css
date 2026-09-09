@@ -1,0 +1,22 @@
+body {
+  margin: 0;
+  font-family: sans-serif;
+  background-color: #F3EEE3;
+  color: #111111;
+}
+
+.coming-soon {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.coming-soon h1 {
+  color: #D20334;
+  font-size: 2rem;
+  margin-bottom: 0.5rem;
+}
+
