@@ -4,14 +4,112 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Cybanext Technologies</title>
+  <link rel="icon" type="image/png" href="assets/images/CYBANEXT ICON.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons@latest/iconfont/tabler-icons.min.css">
   <link rel="stylesheet" href="style.css">
 </head>
-
 <body>
-    <main class="coming-soon">
-     <h1>Cybanext is coming soon.</h1>
-    </main>
+
+  <header class="site-header">
+    <a href="#" class="logo">
+      <img src="assets/images/CYBANEXT NB (3).png" alt="Cybanext logo" class="logo-img">
+    </a>
+
+    <nav class="main-nav" id="mainNav">
+      <a href="#" class="active"><span class="nav-number">01</span><span>Home</span></a>
+      <a href="#tracks"><span class="nav-number">02</span><span>Internship Program</span></a>
+      <a href="#about"><span class="nav-number">03</span><span>About</span></a>
+      <a href="#contact"><span class="nav-number">04</span><span>Contact</span></a>
+    </nav>
+
+    <div class="header-actions">
+      <a href="#" class="btn-worker-login" aria-label="Worker Login"><i class="ti ti-user-circle"></i><span class="login-text"> Worker Login</span></a>
+      <button class="hamburger-btn" id="hamburgerBtn" aria-label="Toggle menu" aria-expanded="false">
+        <span></span><span></span><span></span>
+      </button>
+    </div>
+  </header>
+
+  <section class="hero">
+    <div class="hero-content">
+      <h1>Cybersecurity Talent, <span class="highlight">Built Hands-On.</span></h1>
+      <p>Cybanext Technologies trains the next generation of cybersecurity professionals through real, hands-on internship tracks — no simulations, no shortcuts.</p>
+      <div class="hero-buttons">
+        <a href="#apply" class="btn-primary">Apply for the Internship <i class="ti ti-arrow-right" aria-hidden="true"></i></a>
+        <a href="#tracks" class="btn-secondary">Meet the Tracks</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="tracks" id="tracks">
+    <span class="eyebrow">Our Specialist Tracks</span>
+    <p class="tracks-subtitle">Real, hands-on internship tracks — no simulations, no shortcuts</p>
+    <div class="tracks-grid">
+      <div class="track-card">
+        <i class="ti ti-shield-check track-icon"></i>
+        <h3>Incident Response</h3>
+        <p>Investigate real-world-style security incidents from first alert to final report.</p>
+      </div>
+      <div class="track-card">
+        <i class="ti ti-headset track-icon"></i>
+        <h3>SOC Analyst</h3>
+        <p>Triage alerts, separate real threats from noise, and escalate what matters.</p>
+      </div>
+      <div class="track-card">
+        <i class="ti ti-network track-icon"></i>
+        <h3>Network Security</h3>
+        <p>Audit firewalls, spot segmentation gaps, and prioritize real risk.</p>
+      </div>
+      <div class="track-card">
+        <i class="ti ti-bug track-icon"></i>
+        <h3>Web App Penetration Testing</h3>
+        <p>Find and report the vulnerabilities real attackers look for.</p>
+      </div>
+      <div class="track-card">
+        <i class="ti ti-cloud track-icon"></i>
+        <h3>Cloud Security</h3>
+        <p>Review real cloud configurations and catch the mistakes that cause breaches.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="stats-row">
+    <h2>Why Cybanext?</h2>
+    <div class="stats-grid">
+      <div class="stat">
+        <div class="stat-number">05</div>
+        <div class="stat-label">Specialist Tracks</div>
+      </div>
+      <div class="stat">
+        <div class="stat-number">1:1</div>
+        <div class="stat-label">Mentor Support</div>
+      </div>
+      <div class="stat">
+        <div class="stat-number">100%</div>
+        <div class="stat-label">Hands-On Projects</div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="site-footer" id="contact">
+    <div class="footer-top">
+      <div class="footer-brand">
+        <img src="assets/images/CYBANEXT NB (3).png" alt="Cybanext logo" class="footer-logo-img">
+        <p>Training the next generation of cybersecurity professionals through real, hands-on internship tracks.</p>
+      </div>
+
+      <div class="footer-contact">
+        <div><i class="ti ti-mail"></i> hello@cybanext.com</div>
+        <a href="#" class="footer-login-link"><i class="ti ti-user-circle"></i> Worker Login</a>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      &copy; 2026 Cybanext Technologies. All rights reserved.
+    </div>
+  </footer>
+
   <script src="script.js"></script>
 </body>
-
 </html>
