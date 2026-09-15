@@ -23,3 +23,13 @@ document.addEventListener('click', (event) => {
     closeDrawer();
   }
 });
+
+const navLinks = mainNav.querySelectorAll('a');
+
+navLinks.forEach((link) => {
+  link.addEventListener('click', () => {
+    if (mainNav.classList.contains('open')) {
+      closeDrawer();
+    }
+  });
+});
