@@ -1,7 +1,14 @@
+/* A basic reset — browsers all have slightly different default
+   spacing and box models, so this puts everyone on the same page
+   before any of my own styles kick in. */
 * {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+}
+
+html {
+  scroll-behavior: smooth;
 }
 
 body {
@@ -11,12 +18,21 @@ body {
   background: #FFFFFF;
 }
 
+section[id], footer[id] {
+  scroll-margin-top: 80px;
+}
+
+/* Links inherit the surrounding text color by default instead of
+   the usual blue/underline — I style each link explicitly where it
+   actually needs to stand out. */
 a {
   text-decoration: none;
   color: inherit;
 }
 
-/* ---- Header ---- */
+/* The top navigation bar. It stays pinned to the top of the page
+   while scrolling (position: sticky) so Worker Login and the nav
+   links are always one tap away. */
 .site-header {
   position: sticky;
   top: 0;
@@ -50,6 +66,8 @@ a {
   transition: color 0.15s ease;
 }
 
+/* A little red underline that grows in from the left on hover,
+   instead of just popping into view. */
 .main-nav a::after {
   content: '';
   position: absolute;
@@ -73,6 +91,9 @@ a {
   color: #111111;
 }
 
+/* These little "01 / 02 / 03" numbers only show up inside the
+   mobile drawer — hidden here on desktop where the nav is a plain
+   inline row. */
 .nav-number {
   display: none;
 }
@@ -83,7 +104,8 @@ a {
   gap: 16px;
 }
 
-/* ---- Hamburger button ---- */
+/* The hamburger icon. Hidden by default — it only appears once we
+   hit mobile width, further down in the media query. */
 .hamburger-btn {
   display: none;
   background: none;
@@ -101,6 +123,8 @@ a {
   transition: transform 0.25s ease, opacity 0.25s ease;
 }
 
+/* When the menu is open, the three bars morph into an X — top bar
+   rotates down, middle bar disappears, bottom bar rotates up. */
 .hamburger-btn.open span:nth-child(1) {
   transform: translateY(7px) rotate(45deg);
 }
@@ -113,7 +137,9 @@ a {
   transform: translateY(-7px) rotate(-45deg);
 }
 
-/* ---- Worker Login button (neubrutalist style) ---- */
+/* Worker Login button — solid fill, thick border, and a hard offset
+   shadow instead of a soft blurred one. On click/hover it "presses
+   down" by shrinking its own shadow, which sells the tactile feel. */
 .btn-worker-login {
   background: #D20334;
   color: #FFFFFF;
@@ -141,7 +167,10 @@ a {
   color: #FFFFFF;
 }
 
-/* ---- Hero ---- */
+/* The hero banner up top. The background image sits behind
+   everything using ::before/::after pseudo-elements rather than a
+   plain background-image, so I can layer a cream tint over the
+   photo without needing an extra wrapper div in the HTML. */
 .hero {
   position: relative;
   isolation: isolate;
@@ -159,6 +188,8 @@ a {
   pointer-events: none;
 }
 
+/* The actual photo, dimmed down a bit so text stays readable on
+   top of it without needing a heavy dark overlay. */
 .hero::before {
   z-index: -2;
   background: url('assets/images/background-image.jpg') 62% center / cover no-repeat;
@@ -166,6 +197,9 @@ a {
   transform: scale(1.02);
 }
 
+/* A semi-transparent cream layer on top of the photo — this is
+   what actually keeps the headline legible no matter what's going
+   on in the photo underneath. */
 .hero::after {
   z-index: -1;
   background: #F3EEE3;
@@ -226,6 +260,8 @@ a {
   line-height: 1;
 }
 
+/* A subtle lift-and-glow on hover, so the main CTA feels a little
+   more alive without being distracting. */
 .btn-primary:hover {
   transform: translateY(-2px);
   box-shadow: 0 8px 20px rgba(210, 3, 52, 0.25);
@@ -242,7 +278,9 @@ a {
   color: #D20334;
 }
 
-/* ---- Tracks ---- */
+/* Tracks section — the intro (headline + subheadline), then the
+   grid of 5 free track cards, then the Digital Forensics block,
+   then a closing "Ready to Apply?" CTA. */
 .tracks {
   padding: 4.5rem 24px;
   text-align: center;
@@ -258,10 +296,21 @@ a {
   margin-bottom: 10px;
 }
 
+.tracks-intro {
+  max-width: 640px;
+  margin: 0 auto 40px;
+}
+
+.tracks-intro h2 {
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 12px 0 16px;
+}
+
 .tracks-subtitle {
   font-size: 15px;
   color: #595959;
-  margin-bottom: 40px;
 }
 
 .tracks-grid {
@@ -281,10 +330,25 @@ a {
   transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
 }
 
+/* Cards lift slightly and pick up a red border on hover — gives a
+   sense that they're clickable/explorable even though right now
+   they're just informational. */
 .track-card:hover {
   transform: translateY(-4px);
   box-shadow: 0 16px 32px -8px rgba(17, 17, 17, 0.1);
   border-color: #D20334;
+}
+
+.track-badge {
+  display: inline-block;
+  background: #F3EEE3;
+  color: #D20334;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 4px 10px;
+  border-radius: 20px;
+  margin-bottom: 12px;
 }
 
 .track-icon {
@@ -305,7 +369,378 @@ a {
   color: #595959;
 }
 
-/* ---- Stats ---- */
+.track-do-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #111111;
+  margin-top: 12px;
+  margin-bottom: 6px;
+}
+
+.track-do-list {
+  list-style: none;
+  padding: 0;
+}
+
+/* Custom red bullet instead of the browser default — keeps every
+   list on the page using the same visual language. */
+.track-do-list li {
+  font-size: 12px;
+  color: #595959;
+  padding-left: 14px;
+  position: relative;
+  margin-bottom: 4px;
+  line-height: 1.5;
+}
+
+.track-do-list li::before {
+  content: '•';
+  position: absolute;
+  left: 0;
+  color: #D20334;
+}
+
+/* Digital Forensics's own block — a two-column layout on desktop:
+   the left side reads like a track card (description, what you'll
+   do), the right side is a matching white panel just for the
+   practical details — duration and price — since those don't apply
+   to the free tracks. It sits outside .tracks-grid with its own
+   heavier border, so it visually reads as a different kind of
+   offer without breaking from the page's overall white/cream
+   rhythm — no separate button either, since it routes through the
+   same Apply form as everything else. */
+.forensics-block {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 0;
+  max-width: 960px;
+  margin: 32px auto 0;
+  background: #FFFFFF;
+  border: 1px solid #E5E2DA;
+  border-radius: 12px;
+  overflow: hidden;
+  text-align: left;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.forensics-block:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 16px 32px -8px rgba(17, 17, 17, 0.1);
+  border-color: #D20334;
+}
+
+.forensics-content {
+  padding: 32px;
+  border-right: 1px solid #E5E2DA;
+}
+
+/* The badge here is dark instead of the cream/red "FREE" badge, so
+   it's obvious at a glance this is a different kind of offer. */
+.track-badge--paid {
+  background: #111111;
+  color: #FFFFFF;
+}
+
+.forensics-icon {
+  display: block;
+  font-size: 28px;
+  color: #D20334;
+  margin: 12px 0;
+}
+
+.forensics-content h3 {
+  font-size: 20px;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+.forensics-content p {
+  font-size: 13px;
+  color: #595959;
+  line-height: 1.6;
+}
+
+/* Kept as plain white to match the left panel — no tint here, so
+   the whole block reads as one consistent card split into two
+   halves, rather than two different surfaces stitched together. */
+.forensics-details {
+  background: #FFFFFF;
+  padding: 32px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  justify-content: center;
+}
+
+.forensics-detail {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.forensics-detail i {
+  color: #D20334;
+  font-size: 20px;
+  margin-top: 2px;
+}
+
+.forensics-detail-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #888780;
+  margin-bottom: 2px;
+}
+
+.forensics-detail-value {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  color: #111111;
+}
+
+.tracks-cta {
+  text-align: center;
+  border-top: 1px solid #E5E2DA;
+  margin-top: 48px;
+  padding-top: 36px;
+}
+
+.tracks-cta h3 {
+  font-size: 20px;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+.tracks-cta p {
+  font-size: 14px;
+  color: #595959;
+  margin-bottom: 20px;
+}
+
+/* Apply section — the actual application form. */
+.apply {
+  padding: 5rem 24px;
+  background: #FFFFFF;
+}
+
+.apply-inner {
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+.apply-intro {
+  text-align: center;
+  margin-bottom: 28px;
+}
+
+.apply-intro h2 {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-bottom: 14px;
+}
+
+.apply-lead {
+  font-size: 15px;
+  color: #595959;
+  line-height: 1.6;
+}
+
+/* The pricing callout box — sits above the form so nobody's
+   surprised by the fees after they've already filled everything
+   in. */
+.apply-pricing-note {
+  display: flex;
+  gap: 12px;
+  background: #F3EEE3;
+  border-radius: 10px;
+  padding: 16px 18px;
+  margin-bottom: 32px;
+}
+
+.apply-pricing-note i {
+  color: #D20334;
+  font-size: 18px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.apply-pricing-note p {
+  font-size: 13px;
+  color: #595959;
+  line-height: 1.6;
+}
+
+.apply-form {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form-group label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111111;
+}
+
+.optional {
+  font-weight: 400;
+  color: #888780;
+}
+
+.form-group input,
+.form-group select,
+.form-group textarea {
+  font-family: 'Poppins', sans-serif;
+  font-size: 14px;
+  padding: 12px 14px;
+  border: 1px solid #B4B2A9;
+  border-radius: 6px;
+  color: #111111;
+  background: #FFFFFF;
+}
+
+/* Red border instead of the default blue browser focus ring, so
+   the form still matches the brand when someone's actually
+   typing into it. */
+.form-group input:focus,
+.form-group select:focus,
+.form-group textarea:focus {
+  outline: none;
+  border-color: #D20334;
+}
+
+.apply-submit {
+  margin-top: 8px;
+  gap: 10px;
+  cursor: pointer;
+  border: none;
+  font-family: 'Poppins', sans-serif;
+}
+
+.apply-worker-login {
+  display: block;
+  text-align: center;
+  margin-top: 20px;
+  font-size: 13px;
+  color: #595959;
+}
+
+.apply-worker-login i {
+  color: #D20334;
+  vertical-align: -2px;
+  margin-right: 4px;
+}
+
+/* Contact page styles */
+.contact-section {
+  padding: 5rem 24px;
+  background: #FFFFFF;
+  min-height: calc(100vh - 72px - 260px);
+}
+
+.contact-inner {
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+.contact-intro {
+  text-align: center;
+  margin-bottom: 32px;
+}
+
+.contact-intro h1 {
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-bottom: 12px;
+  color: #111111;
+}
+
+.contact-lead {
+  font-size: 15px;
+  color: #595959;
+  line-height: 1.6;
+}
+
+.contact-form {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.contact-submit {
+  margin-top: 8px;
+  gap: 10px;
+  cursor: pointer;
+  border: none;
+  font-family: 'Poppins', sans-serif;
+  width: 100%;
+}
+
+.form-status-message {
+  padding: 14px 18px;
+  border-radius: 8px;
+  font-size: 14px;
+  margin-bottom: 20px;
+  line-height: 1.5;
+  display: none;
+}
+
+.form-status-message.success {
+  display: block;
+  background: #EBF7EE;
+  color: #1B5E20;
+  border: 1px solid #C8E6C9;
+}
+
+.contact-fallback {
+  margin-top: 36px;
+  padding-top: 24px;
+  border-top: 1px solid #E5E2DA;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  text-align: center;
+}
+
+.contact-fallback .fallback-email {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: #595959;
+}
+
+.contact-fallback .fallback-email i {
+  color: #D20334;
+  font-size: 16px;
+}
+
+.contact-fallback .footer-login-link {
+  margin-top: 0;
+  display: inline-flex;
+}
+
+.footer-login-link:hover {
+  text-decoration: underline;
+}
+
+/* The dark "Why Cybanext?" stats band — deliberately breaks from
+   the light/cream palette elsewhere on the page so it reads as a
+   pause point between Apply and About. */
 .stats-row {
   background: #111111;
   padding: 4rem 24px;
@@ -340,7 +775,9 @@ a {
   color: #FFFFFF;
 }
 
-/* ---- About ---- */
+/* About section — intro line, a paragraph block with a red side
+   border (like a pull-quote), then three "pillar" cards reusing
+   the same card style as the tracks grid. */
 .about {
   padding: 5rem 24px;
   background: #F3EEE3;
@@ -449,7 +886,8 @@ a {
   flex-wrap: wrap;
 }
 
-/* ---- Footer ---- */
+/* Footer — brand blurb on one side, contact details + Worker
+   Login on the other, with a thin copyright line underneath. */
 .site-footer {
   padding: 3rem 24px 1.5rem;
 }
@@ -516,7 +954,9 @@ a {
   margin: 0 auto;
 }
 
-/* ---- Mobile ---- */
+/* Everything below this point only applies at phone/small-tablet
+   widths. Above 768px, none of this runs and the desktop styles
+   above are all that apply. */
 @media (max-width: 768px) {
   .site-header {
     padding: 0 20px;
@@ -526,6 +966,9 @@ a {
     height: 28px;
   }
 
+  /* On mobile, Worker Login shrinks down to just the icon in a
+     circle — there's no room for the full button next to the
+     hamburger icon otherwise. */
   .btn-worker-login {
     padding: 10px;
     border-radius: 50%;
@@ -551,6 +994,10 @@ a {
     z-index: 80;
   }
 
+  /* The nav becomes a full-height drawer that slides in from the
+     right instead of a row of inline links. It's off-screen by
+     default (translateX(100%)) and slides into view when the
+     .open class gets toggled by script.js. */
   .main-nav {
     position: fixed;
     top: 0;
@@ -569,6 +1016,9 @@ a {
     box-shadow: -8px 0 24px rgba(17, 17, 17, 0.1);
   }
 
+  /* A small red accent bar that grows in above the first link once
+     the drawer's open, just a bit of flourish so it doesn't feel
+     like a bare list of links. */
   .main-nav::before {
     content: '';
     width: 2px;
@@ -607,6 +1057,10 @@ a {
     transition: opacity 0.2s ease, transform 0.25s ease;
   }
 
+  /* Each link gets its own transition-delay so they fade/slide in
+     one after another rather than all appearing at once — reads
+     top to bottom, last one first (fastest) to first one last
+     (slowest), which is what gives the staggered feel. */
   .main-nav a:nth-of-type(1) {
     transition-delay: 0.21s;
   }
@@ -679,6 +1133,24 @@ a {
     grid-template-columns: 1fr;
   }
 
+  /* The Digital Forensics block stacks into one column on mobile
+     too, just like the regular tracks grid does — the two-column
+     layout only makes sense once there's enough width for both
+     panels to breathe. */
+  .forensics-block {
+    grid-template-columns: 1fr;
+  }
+
+  .forensics-content {
+    border-right: none;
+    border-bottom: 1px solid #E5E2DA;
+  }
+
+  .apply,
+  .contact-section {
+    padding: 3.5rem 20px;
+  }
+
   .about {
     padding: 3.5rem 20px;
   }
@@ -698,6 +1170,9 @@ a {
   }
 }
 
+/* For anyone with motion sensitivity, the OS-level "reduce motion"
+   setting skips all the drawer animation timing above and just
+   snaps things open/closed instantly instead. */
 @media (prefers-reduced-motion: reduce) {
   .main-nav,
   .main-nav::before,
