@@ -1156,6 +1156,42 @@ a {
   margin: 0 auto;
 }
 
+.error-page {
+  min-height: calc(100vh - 72px - 200px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 4rem 24px;
+}
+
+.error-content {
+  max-width: 420px;
+}
+
+.error-code {
+  display: block;
+  font-size: 40px;
+  font-weight: 700;
+  color: #D20334;
+  line-height: 1;
+  margin-bottom: 16px;
+}
+
+.error-content h1 {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-bottom: 14px;
+}
+
+.error-content p {
+  font-size: 14px;
+  color: #595959;
+  margin-bottom: 28px;
+  line-height: 1.6;
+}
+
 /* Everything below this point only applies at phone/small-tablet
    widths. Above 768px, none of this runs and the desktop styles
    above are all that apply. */
