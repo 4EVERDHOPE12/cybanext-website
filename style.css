@@ -621,6 +621,39 @@ a {
   border-color: #D20334;
 }
 
+/* Native input remains part of the form; this supplies its accessible drop-zone UI. */
+.cv-upload-group { gap: 8px; }
+
+.cv-dropzone {
+  position: relative; min-height: 176px; overflow: hidden; cursor: pointer;
+  border: 1px solid #4A4A4A; border-left: 4px solid #D20334; border-radius: 4px;
+  background: #F3EEE3; color: #111111;
+  transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+}
+.cv-dropzone::after { content: ''; position: absolute; inset: -1px; pointer-events: none; border: 1px solid rgba(210,3,52,0); transform: scale(.98); }
+.form-group .cv-file-input { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.cv-upload-content { position: relative; z-index: 1; min-height: 176px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; text-align: center; }
+.cv-upload-icon { margin-bottom: 8px; color: #E34568; font-size: 25px; }
+.cv-upload-title { font-size: 15px; font-weight: 600; line-height: 1.4; }
+.cv-upload-action, .cv-upload-requirements, .cv-upload-status { font-size: 12px; line-height: 1.5; }
+.cv-upload-action { margin-top: 3px; color: #595959; }
+.cv-upload-action span { color: #111111; font-weight: 600; text-decoration: underline; text-decoration-color: #D20334; text-underline-offset: 3px; }
+.cv-upload-requirements { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 14px; margin-top: 13px; color: #595959; }
+.cv-upload-status { display: none; margin-top: 12px; color: #1B5E20; font-weight: 600; }
+.cv-dropzone:focus-visible { outline: 2px solid #D20334; outline-offset: 3px; }
+.cv-dropzone:hover { background: #ECE4D7; border-color: #363636; }
+.cv-dropzone.is-dragging { border-color: #D20334; border-left-color: #D20334; background: #E9DFCF; box-shadow: inset 0 0 0 1px rgba(210,3,52,.18); }
+.cv-dropzone.is-dragging .cv-upload-title::after { content: ' — release to upload'; color: #F19AAC; }
+.cv-dropzone.is-accepted { border-color: #537B5B; border-left-color: #D20334; background: #EAF0E5; }
+.cv-dropzone.is-accepted .cv-upload-icon { color: #2E6A3B; }
+.cv-dropzone.is-accepted .cv-upload-action, .cv-dropzone.is-accepted .cv-upload-requirements { display: none; }
+.cv-dropzone.is-accepted .cv-upload-status { display: block; }
+.cv-dropzone.is-invalid { border-color: #D20334; background: #F9E9EC; }
+.cv-dropzone.is-invalid .cv-upload-status { display: block; color: #A31335; }
+@keyframes cv-upload-ripple { 0% { opacity: .95; transform: scale(.98); } 100% { opacity: 0; transform: scale(1.025); } }
+.cv-dropzone.is-rippling::after { border-color: rgba(238,75,112,.9); animation: cv-upload-ripple 360ms ease-out; }
+.cv-dropzone.is-dragging .cv-upload-title::after { color: #A31335; }
+
 .apply-submit {
   margin-top: 8px;
   gap: 10px;
@@ -1418,6 +1451,28 @@ a {
   .hamburger-btn span {
     transition-duration: 0.01ms;
     transition-delay: 0ms;
+  }
+
+  .cv-dropzone,
+  .cv-dropzone::after {
+    transition: none;
+    animation: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .cv-dropzone,
+  .cv-upload-content {
+    min-height: 164px;
+  }
+
+  .cv-upload-content {
+    padding: 20px 16px;
+  }
+
+  .cv-upload-requirements {
+    flex-direction: column;
+    gap: 2px;
   }
 }
 

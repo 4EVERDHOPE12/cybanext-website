@@ -404,19 +404,6 @@
 
       </div>
 
-
-      <div class="apply-pricing-note">
-
-        <i class="ti ti-info-circle"></i>
-
-        <p>
-          You'll receive payment instructions by email after your application
-          is reviewed.
-        </p>
-
-      </div>
-
-
       <!-- ================= APPLICATION FORM ================= -->
 
       <form
@@ -568,8 +555,23 @@
         ></div>
 
 
-        <!-- Submit -->
+        <div class="form-group cv-upload-group">
+          <label id="cvLabel" for="cv">Upload your CV</label>
+          <div class="cv-dropzone" id="cvDropzone" role="button" tabindex="0" aria-labelledby="cvLabel cvUploadTitle" aria-describedby="cvUploadRequirements cvUploadStatus">
+            <input class="cv-file-input" type="file" id="cv" name="cv" accept=".pdf,.docx" required>
+            <div class="cv-upload-content">
+              <i class="ti ti-file-upload cv-upload-icon" aria-hidden="true"></i>
+              <p class="cv-upload-title" id="cvUploadTitle">Drop your Resume / CV here</p>
+              <p class="cv-upload-action">or <span>Browse files</span></p>
+              <p class="cv-upload-requirements" id="cvUploadRequirements"><span>✓ PDF or DOCX format</span><span>✓ Max size 10MB</span></p>
+              <p class="cv-upload-status" id="cvUploadStatus" aria-live="polite"></p>
+            </div>
+          </div>
+        </div>
 
+
+
+        <!-- Submit -->
         <button
           type="submit"
           class="btn-primary apply-submit"

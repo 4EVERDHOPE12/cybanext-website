@@ -454,3 +454,111 @@ if (contactForm) {
   });
 
 }
+
+const cvInput = document.getElementById('cv');
+if (cvInput) {
+  const cvDropzone = document.getElementById('cvDropzone');
+  const cvUploadTitle = document.getElementById('cvUploadTitle');
+  const cvUploadStatus = document.getElementById('cvUploadStatus');
+  const cvDefaultTitle = 'Drop your Resume / CV here';
+  const maxCvSize = 10 * 1024 * 1024;
+
+  const resetCvUploadUi = () => {
+    cvDropzone.classList.remove('is-dragging', 'is-accepted', 'is-invalid');
+    cvUploadTitle.textContent = cvDefaultTitle;
+    cvUploadStatus.textContent = '';
+  };
+
+  const triggerCvRipple = () => {
+    cvDropzone.classList.remove('is-rippling');
+    void cvDropzone.offsetWidth;
+    cvDropzone.classList.add('is-rippling');
+    window.setTimeout(() => cvDropzone.classList.remove('is-rippling'), 380);
+  };
+
+  const validateCvFile = (file) => {
+    resetCvUploadUi();
+    if (!file) return false;
+
+    const extension = file.name.split('.').pop().toLowerCase();
+    let message = '';
+    if (!['pdf', 'docx'].includes(extension)) {
+      message = 'File type not accepted. Please choose a PDF or DOCX file.';
+    } else if (file.size > maxCvSize) {
+      message = 'File size exceeds 10MB. Please choose a smaller file.';
+    }
+
+    if (message) {
+      cvInput.setCustomValidity(message);
+      cvDropzone.classList.add('is-invalid');
+      cvUploadStatus.textContent = message;
+      return false;
+    }
+
+    cvInput.setCustomValidity('');
+    cvDropzone.classList.add('is-accepted');
+    cvUploadTitle.textContent = file.name;
+    cvUploadStatus.textContent = '✓ File uploaded successfully';
+    triggerCvRipple();
+    return true;
+  };
+
+  cvDropzone.addEventListener('click', () => cvInput.click());
+  cvDropzone.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      cvInput.click();
+    }
+  });
+
+  ['dragenter', 'dragover'].forEach((eventName) => {
+    cvDropzone.addEventListener(eventName, (event) => {
+      event.preventDefault();
+      cvDropzone.classList.add('is-dragging');
+      triggerCvRipple();
+    });
+  });
+
+  ['dragleave', 'drop'].forEach((eventName) => {
+    cvDropzone.addEventListener(eventName, (event) => {
+      event.preventDefault();
+      if (eventName === 'drop' || !cvDropzone.contains(event.relatedTarget)) {
+        cvDropzone.classList.remove('is-dragging');
+      }
+    });
+  });
+
+  cvDropzone.addEventListener('drop', (event) => {
+    const file = event.dataTransfer.files[0];
+    if (!file) return;
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    cvInput.files = transfer.files;
+    cvInput.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+
+  cvInput.addEventListener('change', async () => {
+    const selectedFile = cvInput.files[0];
+    if (!selectedFile) {
+      resetCvUploadUi();
+      return;
+    }
+
+    if (!validateCvFile(selectedFile)) return;
+
+    const formData = new FormData();
+    formData.append('cv', selectedFile);
+
+    const response = await fetch('/api/scan-cv', {
+      method: 'POST',
+      body: formData
+    });
+
+    const result = await response.json();
+    console.log('CV scan result:', result);
+  });
+
+  applicationForm?.addEventListener('reset', () => {
+    window.setTimeout(resetCvUploadUi, 0);
+  });
+}
