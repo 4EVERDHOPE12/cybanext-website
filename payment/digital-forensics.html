@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  >
+
+  <title>Complete Your DFIR Registration | Cybanext</title>
+
+  <meta
+    name="description"
+    content="Complete your Digital Forensics and Incident Response registration with Cybanext."
+  >
+
+  <link rel="stylesheet" href="../style.css">
+
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css"
+  >
+</head>
+
+
+<body>
+
+  <main class="dfir-payment-page">
+
+    <div class="dfir-payment-card">
+
+      <!-- =========================================
+           PROGRESS STEPPER
+      ========================================== -->
+
+      <div class="dfir-stepper">
+
+        <div class="dfir-step dfir-step-complete">
+          <span class="dfir-step-number">✓</span>
+          <span class="dfir-step-label">CV Screening</span>
+        </div>
+
+        <div class="dfir-step-line"></div>
+
+        <div class="dfir-step dfir-step-active">
+          <span class="dfir-step-number">2</span>
+          <span class="dfir-step-label">Payment & Verification</span>
+        </div>
+
+        <div class="dfir-step-line"></div>
+
+        <div class="dfir-step dfir-step-disabled">
+          <span class="dfir-step-number">3</span>
+          <span class="dfir-step-label">Portal Access</span>
+        </div>
+
+      </div>
+
+
+      <!-- =========================================
+           PAYMENT CONTENT
+      ========================================== -->
+
+      <div class="dfir-payment-body">
+
+        <div class="dfir-payment-header">
+
+          <span class="dfir-eyebrow">
+            DIGITAL FORENSICS & INCIDENT RESPONSE
+          </span>
+
+          <h1>
+            Complete Your DFIR Registration
+          </h1>
+
+          <p>
+            Your CV has passed the initial qualification
+            screening. Select your payment currency below
+            to continue your registration.
+          </p>
+
+        </div>
+
+
+        <!-- =========================================
+             APPLICANT INFO
+        ========================================== -->
+
+        <div class="dfir-applicant-info">
+
+          <div>
+            <span>Applicant</span>
+            <strong id="applicantName">Loading...</strong>
+          </div>
+
+          <div>
+            <span>Email</span>
+            <strong id="applicantEmail">Loading...</strong>
+          </div>
+
+        </div>
+
+
+        <!-- =========================================
+             CURRENCY SWITCHER
+        ========================================== -->
+
+        <div class="dfir-currency-section">
+
+          <span class="dfir-section-label">
+            SELECT CURRENCY
+          </span>
+
+          <div class="dfir-currency-switcher">
+
+            <button
+              type="button"
+              class="dfir-currency-btn active"
+              id="ghsBtn"
+              data-currency="GHS"
+            >
+              GHS (GH₵)
+            </button>
+
+            <button
+              type="button"
+              class="dfir-currency-btn"
+              id="usdBtn"
+              data-currency="USD"
+            >
+              USD ($)
+            </button>
+
+          </div>
+
+        </div>
+
+
+        <!-- =========================================
+             INVOICE
+        ========================================== -->
+
+        <div class="dfir-invoice">
+
+          <div class="dfir-invoice-row">
+
+            <span>Selected Track</span>
+
+            <strong>
+              Digital Forensics & Incident Response
+            </strong>
+
+          </div>
+
+
+          <div class="dfir-invoice-row">
+
+            <span>Payment Methods</span>
+
+            <strong id="paymentMethods">
+              Mobile Money (MTN, Telecel, AT) & Cards
+            </strong>
+
+          </div>
+
+
+          <div class="dfir-invoice-divider"></div>
+
+
+          <div class="dfir-total-row">
+
+            <span>Total Payable</span>
+
+            <strong id="totalAmount">
+              GH₵1,200
+            </strong>
+
+          </div>
+
+        </div>
+
+
+        <!-- =========================================
+             PAYMENT BUTTON
+        ========================================== -->
+
+        <button
+          type="button"
+          class="dfir-pay-button"
+          id="payNowBtn"
+        >
+          Pay GH₵1,200 with Paystack
+          <i class="ti ti-arrow-right"></i>
+        </button>
+
+
+        <p class="dfir-security-note">
+          <i class="ti ti-lock"></i>
+
+          Payments are securely processed through
+          Paystack. Cybanext does not store your card
+          details.
+        </p>
+
+
+        <div
+          id="paymentMessage"
+          class="dfir-payment-message"
+          aria-live="polite"
+        ></div>
+
+      </div>
+
+    </div>
+
+  </main>
+
+
+  <!-- Paystack Inline JS -->
+  <script src="https://js.paystack.co/v1/inline.js"></script>
+
+  <script src="./digital-forensics-payment.js"></script>
+
+</body>
+
+</html>

@@ -1555,3 +1555,559 @@ a {
   }
 
 }
+
+/* =========================================================
+   DIGITAL FORENSICS PAYMENT PAGE
+========================================================= */
+
+:root {
+  --primary-red: #D20334;
+  --dark-surface: #111111;
+  --light-bg: #F8F9FA;
+  --text-main: #111111;
+  --text-muted: #595959;
+  --card-bg: #FFFFFF;
+  --border-color: #E5E7EB;
+  --success-green: #22C55E;
+}
+
+
+/* =========================================================
+   PAGE
+========================================================= */
+
+.dfir-payment-page {
+  min-height: 100vh;
+
+  display: flex;
+  justify-content: center;
+  align-items: center;
+
+  padding: 50px 20px;
+
+  background: var(--light-bg);
+}
+
+
+/* =========================================================
+   MAIN CARD
+========================================================= */
+
+.dfir-payment-card {
+  width: 100%;
+  max-width: 680px;
+
+  background: var(--card-bg);
+
+  border: 1px solid var(--border-color);
+
+  border-radius: 12px;
+
+  overflow: hidden;
+
+  box-shadow:
+    0 4px 20px rgba(0, 0, 0, 0.08);
+}
+
+
+/* =========================================================
+   STEPPER
+========================================================= */
+
+.dfir-stepper {
+  display: flex;
+  align-items: center;
+
+  padding: 22px 28px;
+
+  background: var(--dark-surface);
+}
+
+
+.dfir-step {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+
+  white-space: nowrap;
+}
+
+
+.dfir-step-number {
+  width: 28px;
+  height: 28px;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  border-radius: 50%;
+
+  background: #333;
+
+  color: #888;
+
+  font-size: 13px;
+  font-weight: 700;
+}
+
+
+.dfir-step-label {
+  font-size: 11px;
+  color: #888;
+}
+
+
+/* Completed */
+
+.dfir-step-complete .dfir-step-number {
+  background: var(--success-green);
+  color: white;
+}
+
+
+.dfir-step-complete .dfir-step-label {
+  color: white;
+}
+
+
+/* Active */
+
+.dfir-step-active .dfir-step-number {
+  background: var(--primary-red);
+  color: white;
+}
+
+
+.dfir-step-active .dfir-step-label {
+  color: white;
+  font-weight: 700;
+}
+
+
+/* Disabled */
+
+.dfir-step-disabled .dfir-step-label {
+  color: #888;
+}
+
+
+.dfir-step-line {
+  flex: 1;
+
+  height: 1px;
+
+  margin: 0 15px;
+
+  background: #333;
+}
+
+
+/* =========================================================
+   BODY
+========================================================= */
+
+.dfir-payment-body {
+  padding: 45px;
+}
+
+
+/* =========================================================
+   HEADER
+========================================================= */
+
+.dfir-payment-header {
+  margin-bottom: 32px;
+}
+
+
+.dfir-eyebrow {
+  display: inline-block;
+
+  margin-bottom: 12px;
+
+  color: var(--primary-red);
+
+  font-size: 11px;
+  font-weight: 700;
+
+  letter-spacing: 1.5px;
+}
+
+
+.dfir-payment-header h1 {
+  margin: 0 0 15px;
+
+  color: var(--text-main);
+
+  font-size: 34px;
+  line-height: 1.15;
+}
+
+
+.dfir-payment-header p {
+  margin: 0;
+
+  color: var(--text-muted);
+
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+
+/* =========================================================
+   APPLICANT INFO
+========================================================= */
+
+.dfir-applicant-info {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+
+  gap: 20px;
+
+  margin-bottom: 32px;
+
+  padding: 18px;
+
+  background: #FAFAFA;
+
+  border: 1px solid var(--border-color);
+
+  border-radius: 8px;
+}
+
+
+.dfir-applicant-info span {
+  display: block;
+
+  margin-bottom: 6px;
+
+  color: var(--text-muted);
+
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+
+.dfir-applicant-info strong {
+  color: var(--text-main);
+
+  font-size: 14px;
+
+  word-break: break-word;
+}
+
+
+/* =========================================================
+   CURRENCY
+========================================================= */
+
+.dfir-currency-section {
+  margin-bottom: 25px;
+
+  text-align: center;
+}
+
+
+.dfir-section-label {
+  display: block;
+
+  margin-bottom: 10px;
+
+  color: var(--text-muted);
+
+  font-size: 10px;
+  font-weight: 700;
+
+  letter-spacing: 1px;
+}
+
+
+.dfir-currency-switcher {
+  display: inline-flex;
+
+  padding: 4px;
+
+  background: #F1F1F1;
+
+  border-radius: 50px;
+}
+
+
+.dfir-currency-btn {
+  padding: 10px 22px;
+
+  border: 0;
+
+  border-radius: 50px;
+
+  background: transparent;
+
+  color: var(--text-muted);
+
+  font-family: inherit;
+
+  font-size: 13px;
+  font-weight: 600;
+
+  cursor: pointer;
+
+  transition:
+    background 0.2s ease,
+    color 0.2s ease;
+}
+
+
+.dfir-currency-btn.active {
+  background: var(--primary-red);
+
+  color: white;
+}
+
+
+/* =========================================================
+   INVOICE
+========================================================= */
+
+.dfir-invoice {
+  padding: 22px;
+
+  background: #FAFAFA;
+
+  border: 1px solid var(--border-color);
+
+  border-radius: 8px;
+}
+
+
+.dfir-invoice-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+
+  gap: 25px;
+
+  padding: 8px 0;
+}
+
+
+.dfir-invoice-row span {
+  color: var(--text-muted);
+
+  font-size: 13px;
+}
+
+
+.dfir-invoice-row strong {
+  max-width: 60%;
+
+  color: var(--text-main);
+
+  font-size: 13px;
+
+  text-align: right;
+}
+
+
+.dfir-invoice-divider {
+  height: 1px;
+
+  margin: 15px 0;
+
+  background: var(--border-color);
+}
+
+
+.dfir-total-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+
+.dfir-total-row span {
+  color: var(--text-main);
+
+  font-size: 14px;
+  font-weight: 700;
+}
+
+
+.dfir-total-row strong {
+  color: var(--primary-red);
+
+  font-size: 24px;
+}
+
+
+/* =========================================================
+   PAY BUTTON
+========================================================= */
+
+.dfir-pay-button {
+  width: 100%;
+
+  display: flex;
+  justify-content: center;
+  align-items: center;
+
+  gap: 10px;
+
+  margin-top: 25px;
+
+  padding: 16px 20px;
+
+  border: 0;
+
+  border-radius: 7px;
+
+  background: var(--primary-red);
+
+  color: white;
+
+  font-family: inherit;
+
+  font-size: 14px;
+  font-weight: 700;
+
+  cursor: pointer;
+
+  box-shadow:
+    0 5px 15px rgba(210, 3, 52, 0.18);
+
+  transition:
+    transform 0.2s ease,
+    opacity 0.2s ease;
+}
+
+
+.dfir-pay-button:hover {
+  transform: translateY(-1px);
+}
+
+
+.dfir-pay-button:disabled {
+  opacity: 0.6;
+
+  cursor: not-allowed;
+
+  transform: none;
+}
+
+
+/* =========================================================
+   SECURITY NOTE
+========================================================= */
+
+.dfir-security-note {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+
+  gap: 6px;
+
+  margin: 16px 0 0;
+
+  color: var(--text-muted);
+
+  font-size: 11px;
+
+  text-align: center;
+}
+
+
+/* =========================================================
+   PAYMENT MESSAGE
+========================================================= */
+
+.dfir-payment-message {
+  display: none;
+
+  margin-top: 18px;
+
+  padding: 12px;
+
+  border-radius: 6px;
+
+  font-size: 13px;
+
+  text-align: center;
+}
+
+
+/* =========================================================
+   MOBILE
+========================================================= */
+
+@media (max-width: 600px) {
+
+  .dfir-payment-page {
+    padding: 20px 12px;
+
+    align-items: flex-start;
+  }
+
+
+  .dfir-stepper {
+    padding: 18px 15px;
+  }
+
+
+  .dfir-step {
+    gap: 6px;
+  }
+
+
+  .dfir-step-label {
+    font-size: 9px;
+  }
+
+
+  .dfir-step-number {
+    width: 25px;
+    height: 25px;
+
+    font-size: 11px;
+  }
+
+
+  .dfir-step-line {
+    margin: 0 7px;
+  }
+
+
+  .dfir-payment-body {
+    padding: 30px 20px;
+  }
+
+
+  .dfir-payment-header h1 {
+    font-size: 28px;
+  }
+
+
+  .dfir-applicant-info {
+    grid-template-columns: 1fr;
+  }
+
+
+  .dfir-invoice-row {
+    flex-direction: column;
+
+    gap: 5px;
+  }
+
+
+  .dfir-invoice-row strong {
+    max-width: 100%;
+
+    text-align: left;
+  }
+
+
+  .dfir-total-row strong {
+    font-size: 21px;
+  }
+
+}
