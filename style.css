@@ -1189,17 +1189,154 @@ a {
   margin: 0 auto;
 }
 
+/* =========================================================
+   CUSTOM 404 PAGE
+========================================================= */
+
 .error-page {
-  min-height: calc(100vh - 72px - 200px);
+  min-height: calc(100vh - 72px - 230px);
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 72px 24px;
+  background: #FFFFFF;
   text-align: center;
-  padding: 4rem 24px;
 }
 
 .error-content {
-  max-width: 420px;
+  width: 100%;
+  max-width: 620px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* 404 number */
+.error-code {
+  display: block;
+  margin-bottom: 18px;
+  font-family: 'Poppins', -apple-system, sans-serif;
+  font-size: clamp(64px, 10vw, 110px);
+  font-weight: 700;
+  line-height: 0.95;
+  letter-spacing: -0.06em;
+  color: #D20334;
+}
+
+/* Main message */
+.error-content h1 {
+  margin: 0 0 16px;
+  font-family: 'Poppins', -apple-system, sans-serif;
+  font-size: clamp(30px, 5vw, 48px);
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.035em;
+  color: #111111;
+}
+
+/* Supporting text */
+.error-content p {
+  max-width: 500px;
+  margin: 0 auto 30px;
+  font-size: 16px;
+  line-height: 1.7;
+  color: #595959;
+}
+
+/* Home button */
+.error-home-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  min-height: 48px;
+  padding: 0 24px;
+  border: 1px solid #D20334;
+  border-radius: 0;
+  background: #D20334;
+  color: #FFFFFF;
+  font-family: 'Poppins', -apple-system, sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+  transition:
+    background 0.2s ease,
+    color 0.2s ease,
+    transform 0.2s ease;
+}
+
+.error-home-btn:hover {
+  background: #111111;
+  border-color: #111111;
+  color: #FFFFFF;
+  transform: translateY(-2px);
+}
+
+.error-home-btn i {
+  font-size: 18px;
+  transition: transform 0.2s ease;
+}
+
+.error-home-btn:hover i {
+  transform: translateX(3px);
+}
+
+/* Small Cybanext visual detail */
+.error-content::before {
+  content: '';
+  width: 42px;
+  height: 3px;
+  margin-bottom: 26px;
+  background: #111111;
+}
+
+/* =========================================================
+   404 RESPONSIVE
+========================================================= */
+
+@media (max-width: 768px) {
+  .error-page {
+    min-height: calc(100vh - 64px - 220px);
+    padding: 56px 20px;
+  }
+
+  .error-code {
+    font-size: clamp(58px, 18vw, 88px);
+    margin-bottom: 16px;
+  }
+
+  .error-content h1 {
+    font-size: 30px;
+    margin-bottom: 14px;
+  }
+
+  .error-content p {
+    max-width: 420px;
+    font-size: 14px;
+    line-height: 1.65;
+    margin-bottom: 26px;
+  }
+
+  .error-home-btn {
+    min-height: 46px;
+    padding: 0 20px;
+    font-size: 13px;
+  }
+}
+
+@media (max-width: 480px) {
+  .error-page {
+    padding: 48px 18px;
+  }
+
+  .error-content h1 {
+    font-size: 27px;
+  }
+
+  .error-content p {
+    font-size: 13px;
+  }
 }
 
 .error-code {

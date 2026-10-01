@@ -684,7 +684,7 @@ if (applicationForm) {
           window.setTimeout(() => {
 
             window.location.href =
-              'payment/digital-forensics-payment.html';
+              'payment/digital-forensics.html';
 
           }, 700);
 
