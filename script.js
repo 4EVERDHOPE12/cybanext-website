@@ -103,9 +103,7 @@ function showFormMessage(statusMsg, message, type) {
   });
 }
 
-/* =========================================================
-   APPLICATION FORM
-========================================================= */
+/* ============= APPLICATION FORM =============== */
 const applicationForm = document.getElementById('applicationForm');
 
 /* ================= CV SCANNER ================= */
@@ -119,12 +117,19 @@ async function scanCvOnServer(file, track) {
     body: formData
   });
 
-  const result = await response.json();
+  let result;
+  try {
+    result = await response.json();
+  } catch (jsonError) {
+    throw new Error('The server returned an unexpected response. Please try again.');
+  }
+
   if (!response.ok) {
     throw new Error(
       result.error || 'We could not screen your CV. Please try again.'
     );
   }
+
   return result;
 }
 
