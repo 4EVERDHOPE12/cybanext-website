@@ -369,6 +369,7 @@ if (applicationForm) {
       }
 
       const applicationData = new FormData(applicationForm);
+      applicationData.delete('cv');
 
       const formspreeResponse = await fetch(
         applicationForm.action,
