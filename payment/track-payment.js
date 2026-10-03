@@ -14,6 +14,13 @@ const applicantEmail = sessionStorage.getItem('applicantEmail');
 const selectedTrack = sessionStorage.getItem('selectedTrack');
 const applicantTrackLabel = sessionStorage.getItem('applicantTrackLabel');
 
+if (
+    selectedTrack?.trim().toLowerCase().replace(/[\s-]+/g, '_') ===
+    'digital_forensics'
+) {
+    window.location.replace('./digital-forensics.html');
+}
+
 
 // --------------------------------------------------
 // Display applicant information

@@ -1,53 +1,5 @@
 const https = require('https');
-
-
-/* =========================================================
-   EXPECTED PAYMENT VALUES
-   IMPORTANT:
-   These values are server-side and cannot be changed
-   by the browser.
-========================================================= */
-
-const EXPECTED_PAYMENTS = {
-
-  incident_response: {
-    amount: 3000,
-    currency: 'USD'
-  },
-
-  soc_analyst: {
-    amount: 3000,
-    currency: 'USD'
-  },
-
-  network_security: {
-    amount: 3000,
-    currency: 'USD'
-  },
-
-  web_app_penetration_testing: {
-    amount: 3000,
-    currency: 'USD'
-  },
-
-  cloud_security: {
-    amount: 3000,
-    currency: 'USD'
-  },
-
-  digital_forensics: {
-    GHS: {
-      amount: 120000,
-      currency: 'GHS'
-    },
-
-    USD: {
-      amount: 12000,
-      currency: 'USD'
-    }
-  }
-
-};
+const { getPaymentPrice } = require('../lib/payment-prices');
 
 
 /* =========================================================
@@ -303,12 +255,7 @@ module.exports = async (req, res) => {
         metadata?.selected_currency;
 
 
-      if (
-        !selectedCurrency ||
-        !EXPECTED_PAYMENTS.digital_forensics[
-          selectedCurrency
-        ]
-      ) {
+      if (!selectedCurrency) {
 
         return res.status(400).json({
 
@@ -323,16 +270,21 @@ module.exports = async (req, res) => {
 
 
       expectedPayment =
-        EXPECTED_PAYMENTS.digital_forensics[
-          selectedCurrency
-        ];
+        getPaymentPrice(track, selectedCurrency);
+
+      if (!expectedPayment) {
+        return res.status(400).json({
+          verified: false,
+          error: 'Payment currency could not be verified.'
+        });
+      }
 
     }
 
     else {
 
       expectedPayment =
-        EXPECTED_PAYMENTS[track];
+        getPaymentPrice(track);
 
     }
 

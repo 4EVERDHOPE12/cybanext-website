@@ -30,6 +30,17 @@ const payNowBtn =
 const paymentMessage =
   document.getElementById('paymentMessage');
 
+const DIGITAL_FORENSICS_PRICES = {
+  GHS: {
+    amount: 120000,
+    displayAmount: 'GH₵1,200'
+  },
+  USD: {
+    amount: 12000,
+    displayAmount: '$120'
+  }
+};
+
 
 /* =========================================================
    APPLICANT INFORMATION
@@ -77,17 +88,18 @@ function showPaymentMessage(message, type = 'info') {
 ========================================================= */
 
 function updateCurrencyUI() {
+  const price =
+    DIGITAL_FORENSICS_PRICES[selectedCurrency];
 
   if (selectedCurrency === 'GHS') {
-
     totalAmount.textContent =
-      'GH₵1,200';
+      price.displayAmount;
 
     paymentMethods.textContent =
       'Mobile Money (MTN, Telecel, AT) & Cards';
 
     payNowBtn.innerHTML = `
-      Pay GH₵1,200 with Paystack
+      Pay ${price.displayAmount} with Paystack
       <i class="ti ti-arrow-right"></i>
     `;
 
@@ -98,15 +110,14 @@ function updateCurrencyUI() {
   }
 
   else {
-
     totalAmount.textContent =
-      '$120';
+      price.displayAmount;
 
     paymentMethods.textContent =
       'International Visa / Mastercard';
 
     payNowBtn.innerHTML = `
-      Pay $120 with Paystack
+      Pay ${price.displayAmount} with Paystack
       <i class="ti ti-arrow-right"></i>
     `;
 
@@ -165,7 +176,7 @@ async function initializePayment() {
 
 
   const response =
-    await fetch('/api/initialize-payment', {
+    await fetch('/api/initialize-digital-forensics-payment', {
 
       method: 'POST',
 
@@ -181,9 +192,6 @@ async function initializePayment() {
 
         name:
           applicantName || '',
-
-        track:
-          'digital_forensics',
 
         currency:
           selectedCurrency
@@ -227,6 +235,21 @@ async function initializePayment() {
 
   }
 
+  const expectedPrice =
+    DIGITAL_FORENSICS_PRICES[selectedCurrency];
+
+  if (
+    result.track !== 'digital_forensics' ||
+    result.currency !== selectedCurrency ||
+    result.amount !== expectedPrice.amount
+  ) {
+    throw new Error(
+      'The payment amount could not be confirmed. Please refresh the page and try again.'
+    );
+  }
+
+  totalAmount.textContent =
+    expectedPrice.displayAmount;
 
   return result;
 
