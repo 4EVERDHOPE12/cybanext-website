@@ -3,6 +3,7 @@ const fs = require("fs");
 const pdfParse = require("pdf-parse");
 const mammoth = require("mammoth");
 const { scanText } = require("./keywords");
+const { put } = require("@vercel/blob");
 
 module.exports = async function handler(req, res) {
   try {
@@ -62,14 +63,6 @@ module.exports = async function handler(req, res) {
       return res.status(400).json({
         error: "We could not read this CV. Please upload another PDF or Word document.",
       });
-    } finally {
-      try {
-        if (filePath && fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
-        }
-      } catch (cleanupError) {
-        console.error("CV cleanup error:", cleanupError);
-      }
     }
 
     if (!extractedText || extractedText.trim().length < 20) {
@@ -78,10 +71,33 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    const result = scanText(extractedText);
+    const scanResult = scanText(extractedText);
+
+    if (scanResult.qualified) {
+      try {
+        const fileBuffer = fs.readFileSync(filePath);
+        const safeFileName = fileName.replace(/[^a-zA-Z0-9.\-_]/g, "_");
+        const blobPath = `qualified-cvs/${Date.now()}-${safeFileName}`;
+
+        await put(blobPath, fileBuffer, {
+          access: "public",
+          addRandomSuffix: true,
+        });
+      } catch (storageError) {
+        console.error("CV storage error:", storageError);
+      }
+    }
+
+    try {
+      if (filePath && fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    } catch (cleanupError) {
+      console.error("CV cleanup error:", cleanupError);
+    }
 
     return res.status(200).json({
-      qualified: result.qualified,
+      qualified: scanResult.qualified,
     });
 
   } catch (unexpectedError) {

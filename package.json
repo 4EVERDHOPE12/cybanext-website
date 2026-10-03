@@ -19,6 +19,7 @@
   },
   "homepage": "https://github.com/4EVERDHOPE12/cybanext-website#readme",
   "dependencies": {
+    "@vercel/blob": "^2.8.0",
     "formidable": "^3.5.4",
     "mammoth": "^1.13.0",
     "pdf-parse": "^1.1.1"
