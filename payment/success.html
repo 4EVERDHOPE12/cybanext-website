@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Payment Successful | Cybanext</title>
+    <meta
+        name="description"
+        content="Your Cybanext payment has been successfully verified."
+    >
+
+    <link rel="stylesheet" href="../style.css">
+
+    <link
+        rel="stylesheet"
+        href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css"
+    >
+</head>
+
+<body>
+
+<main class="dfir-payment-page">
+
+    <div class="dfir-payment-card">
+
+        <div class="dfir-payment-body">
+
+            <div class="dfir-payment-header">
+
+                <span class="dfir-eyebrow">
+                    CYBANEXT INTERNSHIP PROGRAM
+                </span>
+
+                <div class="payment-result-icon payment-result-success">
+                    <i class="ti ti-circle-check"></i>
+                </div>
+
+                <h1>Payment Successful</h1>
+
+                <p>
+                    Your payment has been successfully verified.
+                    Your registration can now proceed to the next stage.
+                </p>
+
+            </div>
+
+
+            <div class="dfir-invoice">
+
+                <div class="dfir-invoice-row">
+                    <span>Applicant</span>
+                    <strong id="applicantName">
+                        Loading...
+                    </strong>
+                </div>
+
+                <div class="dfir-invoice-row">
+                    <span>Track</span>
+                    <strong id="selectedTrack">
+                        Loading...
+                    </strong>
+                </div>
+
+                <div class="dfir-invoice-row">
+                    <span>Payment Reference</span>
+                    <strong id="paymentReference">
+                        Loading...
+                    </strong>
+                </div>
+
+            </div>
+
+
+            <div class="payment-result-note">
+
+                <i class="ti ti-info-circle"></i>
+
+                <p>
+                    Keep your payment reference for your records.
+                    Cybanext will provide the next registration or
+                    portal-access instructions through your registered email.
+                </p>
+
+            </div>
+
+
+            <a
+                href="../index.html"
+                class="error-home-btn"
+            >
+                Return to Cybanext
+                <i class="ti ti-arrow-right"></i>
+            </a>
+
+        </div>
+
+    </div>
+
+</main>
+
+
+<script>
+    const applicantName =
+        sessionStorage.getItem('applicantName');
+
+    const applicantTrackLabel =
+        sessionStorage.getItem('applicantTrackLabel');
+
+    const params =
+        new URLSearchParams(window.location.search);
+
+    const reference =
+        params.get('reference');
+
+
+    document.getElementById('applicantName').textContent =
+        applicantName || 'Applicant';
+
+    document.getElementById('selectedTrack').textContent =
+        applicantTrackLabel || 'Internship Track';
+
+    document.getElementById('paymentReference').textContent =
+        reference || 'Unavailable';
+</script>
+
+</body>
+</html>

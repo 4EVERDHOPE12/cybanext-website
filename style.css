@@ -2248,3 +2248,72 @@ a {
   }
 
 }
+/* =========================================================
+   PAYMENT RESULT PAGES
+========================================================= */
+
+.payment-result-icon {
+    width: 72px;
+    height: 72px;
+    margin: 0 auto 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid #111;
+    font-size: 36px;
+}
+
+.payment-result-success {
+    color: #16803c;
+}
+
+.payment-result-failed {
+    color: #D20334;
+}
+
+.payment-result-note {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    margin: 24px 0 30px;
+    padding: 16px;
+    border: 1px solid #d8d2c7;
+    background: #f8f5ee;
+}
+
+.payment-result-note > i {
+    flex-shrink: 0;
+    margin-top: 2px;
+    font-size: 20px;
+}
+
+.payment-result-note p {
+    margin: 0;
+    color: #595959;
+    font-size: 14px;
+    line-height: 1.6;
+}
+
+.payment-result-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.payment-result-actions .error-home-btn {
+    width: 100%;
+}
+
+@media (max-width: 480px) {
+
+    .payment-result-icon {
+        width: 62px;
+        height: 62px;
+        font-size: 30px;
+    }
+
+    .payment-result-note {
+        padding: 14px;
+    }
+
+}

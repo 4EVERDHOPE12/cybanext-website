@@ -162,254 +162,302 @@ function showFormMessage(statusMsg, message, type) {
 }
 
 /* =========================================================
-   APPLICATION FORM
-========================================================= */
+   APPLICATION FORM SUBMISSION
+   ========================================================= */
 const applicationForm = document.getElementById('applicationForm');
 
-/* =========================================================
-   CV SCANNER
-========================================================= */
-async function scanCvOnServer(file, track) {
-  const formData = new FormData();
-  formData.append('cv', file);
-  formData.append('track', track);
-
-  const response = await fetch('/api/scan-cv', {
-    method: 'POST',
-    body: formData
-  });
-
-  let result;
-
-  try {
-    result = await response.json();
-  } catch (jsonError) {
-    throw new Error(
-      'The server returned an unexpected response. Please try again.'
-    );
-  }
-
-  if (!response.ok) {
-    throw new Error(
-      result.error || 'We could not screen your CV. Please try again.'
-    );
-  }
-
-  return result;
-}
-
-/* =========================================================
-   GET SELECTED TRACK LABEL
-========================================================= */
-function getSelectedTrackLabel(trackElement) {
-  if (!trackElement || trackElement.selectedIndex < 0) {
-    return '';
-  }
-  return trackElement.options[trackElement.selectedIndex].textContent.trim();
-}
-
-/* =========================================================
-   APPLICATION FORM SUBMISSION
-========================================================= */
 if (applicationForm) {
   applicationForm.addEventListener('submit', async (event) => {
     event.preventDefault();
 
-    /* ================= ELEMENTS ================= */
-    const statusMsg = document.getElementById('applicationStatus');
     const submitBtn = document.getElementById('submitBtn');
+    const applicationStatus = document.getElementById('applicationStatus');
+    const cvInput = document.getElementById('cv');
+
     const fullName = document.getElementById('fullName');
     const email = document.getElementById('email');
     const track = document.getElementById('track');
     const reason = document.getElementById('reason');
 
-    /* ================= VALIDATION ================= */
+    const showStatus = (message, type = 'info') => {
+      if (!applicationStatus) return;
+
+      applicationStatus.textContent = message;
+      applicationStatus.className = `form-status-message ${type}`;
+      applicationStatus.style.display = 'block';
+    };
+
+    const resetSubmitButton = () => {
+      if (!submitBtn) return;
+
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = 'Submit Application <i class="ti ti-arrow-right"></i>';
+    };
+
+    /* -----------------------------------------
+       BASIC FORM VALIDATION
+       ----------------------------------------- */
+
+    if (
+      !fullName ||
+      !email ||
+      !track ||
+      !reason ||
+      !cvInput
+    ) {
+      showStatus(
+        'Some required application fields are missing. Please refresh the page and try again.',
+        'error'
+      );
+      return;
+    }
+
     if (!fullName.value.trim()) {
-      showFormMessage(statusMsg, 'Please enter your full name.', 'error');
+      showStatus('Please enter your full name.', 'error');
       fullName.focus();
       return;
     }
 
-    if (!email.value.trim()) {
-      showFormMessage(statusMsg, 'Please enter your email address.', 'error');
-      email.focus();
-      return;
-    }
-
-    if (!email.validity.valid) {
-      showFormMessage(
-        statusMsg,
-        'Please enter a valid email address.',
-        'error'
-      );
+    if (!email.validity.valid || !email.value.trim()) {
+      showStatus('Please enter a valid email address.', 'error');
       email.focus();
       return;
     }
 
     if (!track.value) {
-      showFormMessage(
-        statusMsg,
-        'Please select an internship track.',
-        'error'
-      );
+      showStatus('Please select an internship track.', 'error');
       track.focus();
       return;
     }
 
     if (!reason.value.trim()) {
-      showFormMessage(
-        statusMsg,
-        'Please tell us why you want to join this track.',
-        'error'
-      );
+      showStatus('Please tell us why you want to join this track.', 'error');
       reason.focus();
       return;
     }
 
-    /* ================= CV VALIDATION ================= */
-    const selectedCv = cvInput?.files?.[0];
+    if (!cvInput.files || !cvInput.files.length) {
+      showStatus('Please upload your CV before continuing.', 'error');
+      return;
+    }
 
-    if (!selectedCv) {
-      showFormMessage(
-        statusMsg,
-        'Please upload your CV before continuing.',
+    const cvFile = cvInput.files[0];
+
+    /* -----------------------------------------
+       CV CLIENT-SIDE VALIDATION
+       ----------------------------------------- */
+
+    const allowedTypes = [
+      'application/pdf',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    ];
+
+    const maxFileSize = 10 * 1024 * 1024;
+
+    const fileExtension = cvFile.name
+      .split('.')
+      .pop()
+      .toLowerCase();
+
+    if (!['pdf', 'docx'].includes(fileExtension)) {
+      showStatus(
+        'Please upload your CV as a PDF or DOCX file.',
         'error'
       );
-      cvInput?.focus();
       return;
     }
 
-    if (!validateCvFile(selectedCv)) {
+    if (cvFile.size > maxFileSize) {
+      showStatus(
+        'Your CV is too large. Please upload a file smaller than 10MB.',
+        'error'
+      );
       return;
     }
 
-    /* ================= CV SCREENING ================= */
-    submitBtn.disabled = true;
-    submitBtn.innerHTML =
-      '<i class="ti ti-loader-2" aria-hidden="true"></i> Scanning CV...';
-    cvDropzone?.classList.add('is-scanning');
-
-    if (cvUploadStatus) {
-      cvUploadStatus.textContent = 'Scanning your CV securely...';
+    if (
+      cvFile.type &&
+      !allowedTypes.includes(cvFile.type) &&
+      !['pdf', 'docx'].includes(fileExtension)
+    ) {
+      showStatus(
+        'Please upload a valid PDF or DOCX CV.',
+        'error'
+      );
+      return;
     }
 
-    showFormMessage(
-      statusMsg,
-      'We are reviewing your CV. Please wait...',
+    /* -----------------------------------------
+       DISABLE SUBMIT BUTTON
+       ----------------------------------------- */
+
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.innerHTML =
+        'Screening CV... <i class="ti ti-loader-2"></i>';
+    }
+
+    showStatus(
+      'Your CV is being screened. Please wait...',
       'info'
     );
 
     try {
-      const scanResult = await scanCvOnServer(selectedCv, track.value);
+      /* -----------------------------------------
+         STEP 1: SERVER-SIDE CV SCREENING
+         ----------------------------------------- */
 
-      /* =================================================
-         DISQUALIFIED
-      ================================================= */
+      const scanFormData = new FormData();
+
+      scanFormData.append('cv', cvFile);
+      scanFormData.append('track', track.value);
+
+      const scanResponse = await fetch('/api/scan-cv', {
+        method: 'POST',
+        body: scanFormData
+      });
+
+      let scanResult;
+
+      try {
+        scanResult = await scanResponse.json();
+      } catch (jsonError) {
+        throw new Error(
+          'We could not process the CV screening response.'
+        );
+      }
+
+      if (!scanResponse.ok) {
+        throw new Error(
+          scanResult.error ||
+          'We could not screen your CV. Please try again.'
+        );
+      }
+
+      /* -----------------------------------------
+         STEP 2: STOP IF APPLICANT IS NOT QUALIFIED
+         ----------------------------------------- */
+
       if (!scanResult.qualified) {
-        cvDropzone?.classList.remove('is-scanning');
-        cvDropzone?.classList.add('is-screening-failed');
-
-        if (cvUploadStatus) {
-          cvUploadStatus.textContent = 'Screening complete';
-        }
-
-        showFormMessage(
-          statusMsg,
-          'Thank you for your interest. Based on the information in your CV, your application cannot continue to the next stage at this time.',
+        showStatus(
+          'Thank you for applying. Based on our current screening requirements, your CV does not meet the requirements for this track.',
           'error'
         );
 
-        submitBtn.disabled = false;
-        submitBtn.innerHTML =
-          'Submit Application <i class="ti ti-arrow-right" aria-hidden="true"></i>';
-        return;
-      }
-
-      /* =================================================
-         QUALIFIED
-      ================================================= */
-      cvDropzone?.classList.remove(
-        'is-scanning',
-        'is-screening-failed'
-      );
-      cvDropzone?.classList.add('is-screening-passed');
-
-      if (cvUploadStatus) {
-        cvUploadStatus.textContent = '✓ CV screening complete';
-      }
-
-      const selectedTrackLabel = getSelectedTrackLabel(track);
-
-      /* Store Applicant Information for payment pages */
-      sessionStorage.setItem('applicantName', fullName.value.trim());
-      sessionStorage.setItem('applicantEmail', email.value.trim());
-      sessionStorage.setItem('selectedTrack', track.value);
-      sessionStorage.setItem('applicantTrackLabel', selectedTrackLabel);
-
-      /* =================================================
-         DIGITAL FORENSICS ROUTE
-      ================================================= */
-      const isDigitalForensics = selectedTrackLabel
-        .toLowerCase()
-        .includes('digital forensics');
-
-      if (isDigitalForensics) {
-        showFormMessage(
-          statusMsg,
-          'Your CV has passed the initial screening. Taking you to the payment stage...',
-          'success'
-        );
-
-        submitBtn.disabled = true;
-        submitBtn.innerHTML =
-          '<i class="ti ti-loader-2" aria-hidden="true"></i> Opening payment...';
-
-        window.setTimeout(() => {
-          window.location.href = 'payment/digital-forensics.html';
-        }, 800);
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.innerHTML =
+            'Submit Application <i class="ti ti-arrow-right"></i>';
+        }
 
         return;
       }
 
-      /* =================================================
-         FIVE REGULAR TRACKS ROUTE
-      ================================================= */
-      showFormMessage(
-        statusMsg,
-        'Your CV has passed the initial screening. Redirecting you to secure payment...',
+      /* -----------------------------------------
+         STEP 3: QUALIFIED
+         SUBMIT APPLICATION + KEEP CV
+         ----------------------------------------- */
+
+      showStatus(
+        'Your CV passed the initial screening. Submitting your application...',
         'success'
       );
 
-      submitBtn.disabled = true;
-      submitBtn.innerHTML =
-        '<i class="ti ti-loader-2" aria-hidden="true"></i> Opening payment...';
+      if (submitBtn) {
+        submitBtn.innerHTML =
+          'Submitting Application... <i class="ti ti-loader-2"></i>';
+      }
 
-      window.setTimeout(() => {
-        window.location.href = 'payment/track-payment.html';
+      const applicationData = new FormData(applicationForm);
+
+      const formspreeResponse = await fetch(
+        applicationForm.action,
+        {
+          method: 'POST',
+          body: applicationData,
+          headers: {
+            Accept: 'application/json'
+          }
+        }
+      );
+
+      let formspreeResult = {};
+
+      try {
+        formspreeResult = await formspreeResponse.json();
+      } catch (jsonError) {
+        /*
+        Some successful form endpoints may return
+        an empty/non-JSON response.
+        */
+      }
+
+      if (!formspreeResponse.ok) {
+        throw new Error(
+          formspreeResult.error ||
+          'We could not submit your application. Please try again.'
+        );
+      }
+
+      /* -----------------------------------------
+         STEP 4: SAVE APPLICANT SESSION
+         ----------------------------------------- */
+
+      const selectedTrackLabel =
+        track.options[track.selectedIndex].textContent.trim();
+
+      sessionStorage.setItem(
+        'applicantName',
+        fullName.value.trim()
+      );
+
+      sessionStorage.setItem(
+        'applicantEmail',
+        email.value.trim()
+      );
+
+      sessionStorage.setItem(
+        'selectedTrack',
+        track.value
+      );
+
+      sessionStorage.setItem(
+        'applicantTrackLabel',
+        selectedTrackLabel
+      );
+
+      /* -----------------------------------------
+         STEP 5: SEND QUALIFIED APPLICANT TO PAYMENT
+         ----------------------------------------- */
+
+      showStatus(
+        'Application submitted successfully. Redirecting you to payment...',
+        'success'
+      );
+
+      setTimeout(() => {
+        if (track.value === 'digital_forensics') {
+          window.location.href =
+            './payment/digital-forensics.html';
+        } else {
+          window.location.href =
+            './payment/track-payment.html';
+        }
       }, 800);
 
     } catch (error) {
-      /* ===============================================
-         SCREENING ERROR
-      =============================================== */
-      console.error('CV screening error:', error);
+      console.error(
+        'Application submission error:',
+        error
+      );
 
-      cvDropzone?.classList.remove('is-scanning');
-
-      if (cvUploadStatus) {
-        cvUploadStatus.textContent = 'Screening failed';
-      }
-
-      showFormMessage(
-        statusMsg,
+      showStatus(
         error.message ||
-          'We could not screen your CV right now. Please try again.',
+        'Something went wrong while submitting your application. Please try again.',
         'error'
       );
 
-      submitBtn.disabled = false;
-      submitBtn.innerHTML =
-        'Submit Application <i class="ti ti-arrow-right" aria-hidden="true"></i>';
+      resetSubmitButton();
     }
   });
 }
@@ -425,6 +473,7 @@ if (contactForm) {
 
     const statusMsg = document.getElementById('contactStatus');
     const submitBtn = document.getElementById('contactSubmitBtn');
+
     const contactName = document.getElementById('contactName');
     const contactEmail = document.getElementById('contactEmail');
     const contactReason = document.getElementById('contactReason');
@@ -453,7 +502,7 @@ if (contactForm) {
         'Please enter a valid email address.',
         'error'
       );
-      contactEmail.focus();
+      email.focus();
       return;
     }
 
@@ -560,6 +609,7 @@ if (cvInput && cvDropzone) {
     const transfer = new DataTransfer();
     transfer.items.add(file);
     cvInput.files = transfer.files;
+
     cvInput.dispatchEvent(new Event('change', { bubbles: true }));
   });
 

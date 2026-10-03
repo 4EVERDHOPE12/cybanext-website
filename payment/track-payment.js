@@ -106,6 +106,11 @@ async function initializePayment() {
 
 async function startPaystackPayment() {
 
+    if (payNowBtn.disabled) {
+        return;
+    }
+
+
     if (typeof PaystackPop === 'undefined') {
 
         showPaymentMessage(
@@ -151,6 +156,8 @@ async function startPaystackPayment() {
 
                 onSuccess: function (transaction) {
 
+                    // Never trust the browser callback alone.
+                    // The transaction must be verified by our server.
                     verifyPaymentOnServer(
                         transaction.reference
                     );
@@ -213,10 +220,26 @@ async function startPaystackPayment() {
 
 async function verifyPaymentOnServer(reference) {
 
+    if (!reference) {
+
+        showPaymentMessage(
+            'No payment reference was received. Please try again.',
+            'error'
+        );
+
+        resetPaymentButton();
+
+        return;
+    }
+
+
     showPaymentMessage(
         'Verifying your payment...',
         'info'
     );
+
+
+    payNowBtn.disabled = true;
 
 
     try {

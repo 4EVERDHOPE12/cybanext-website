@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Payment Not Completed | Cybanext</title>
+    <meta
+        name="description"
+        content="Your Cybanext payment was not completed."
+    >
+
+    <link rel="stylesheet" href="../style.css">
+
+    <link
+        rel="stylesheet"
+        href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css"
+    >
+</head>
+
+<body>
+
+<main class="dfir-payment-page">
+
+    <div class="dfir-payment-card">
+
+        <div class="dfir-payment-body">
+
+            <div class="dfir-payment-header">
+
+                <span class="dfir-eyebrow">
+                    CYBANEXT INTERNSHIP PROGRAM
+                </span>
+
+                <div class="payment-result-icon payment-result-failed">
+                    <i class="ti ti-alert-circle"></i>
+                </div>
+
+                <h1>Payment Not Completed</h1>
+
+                <p>
+                    Your payment was not completed or could not be verified.
+                    No registration payment has been confirmed.
+                </p>
+
+            </div>
+
+
+            <div class="payment-result-note">
+
+                <i class="ti ti-help-circle"></i>
+
+                <p>
+                    If you cancelled the payment or experienced an error,
+                    you can return to the payment page and try again.
+                </p>
+
+            </div>
+
+
+            <div class="payment-result-actions">
+
+                <button
+                    type="button"
+                    class="dfir-pay-button"
+                    id="tryAgainBtn"
+                >
+                    Try Payment Again
+                    <i class="ti ti-refresh"></i>
+                </button>
+
+                <a
+                    href="../index.html"
+                    class="error-home-btn"
+                >
+                    Return to Cybanext
+                    <i class="ti ti-arrow-right"></i>
+                </a>
+
+            </div>
+
+        </div>
+
+    </div>
+
+</main>
+
+
+<script>
+    const selectedTrack =
+        sessionStorage.getItem('selectedTrack');
+
+    const tryAgainBtn =
+        document.getElementById('tryAgainBtn');
+
+
+    tryAgainBtn.addEventListener('click', () => {
+
+        if (selectedTrack === 'digital_forensics') {
+
+            window.location.href =
+                './digital-forensics.html';
+
+            return;
+        }
+
+
+        window.location.href =
+            './track-payment.html';
+
+    });
+</script>
+
+</body>
+</html>
