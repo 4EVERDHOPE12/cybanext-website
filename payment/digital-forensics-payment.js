@@ -1,512 +1,582 @@
-const PAYSTACK_PUBLIC_KEY =
-  'pk_test_ca734c2d47eb80afde47c1814703cd9e0f3d0a30';
-
-
-/* =========================================================
-   ELEMENTS
-========================================================= */
-
 const applicantNameElement =
-  document.getElementById('applicantName');
+    document.getElementById('applicantName');
 
 const applicantEmailElement =
-  document.getElementById('applicantEmail');
+    document.getElementById('applicantEmail');
 
 const ghsBtn =
-  document.getElementById('ghsBtn');
+    document.getElementById('ghsBtn');
 
 const usdBtn =
-  document.getElementById('usdBtn');
+    document.getElementById('usdBtn');
 
-const totalAmount =
-  document.getElementById('totalAmount');
+const ghsAmount =
+    document.getElementById('ghsAmount');
 
-const paymentMethods =
-  document.getElementById('paymentMethods');
+const usdAmount =
+    document.getElementById('usdAmount');
 
 const payNowBtn =
-  document.getElementById('payNowBtn');
+    document.getElementById('payNowBtn');
 
 const paymentMessage =
-  document.getElementById('paymentMessage');
-
-const DIGITAL_FORENSICS_PRICES = {
-  GHS: {
-    amount: 120000,
-    displayAmount: 'GH₵1,200'
-  },
-  USD: {
-    amount: 12000,
-    displayAmount: '$120'
-  }
-};
+    document.getElementById('paymentMessage');
 
 
-/* =========================================================
-   APPLICANT INFORMATION
-========================================================= */
+// --------------------------------------------------
+// Applicant information
+// --------------------------------------------------
 
 const applicantName =
-  sessionStorage.getItem('applicantName');
+    sessionStorage.getItem('applicantName');
 
 const applicantEmail =
-  sessionStorage.getItem('applicantEmail');
+    sessionStorage.getItem('applicantEmail');
 
 
-applicantNameElement.textContent =
-  applicantName || 'Applicant';
-
-applicantEmailElement.textContent =
-  applicantEmail || 'Email unavailable';
-
-
-/* =========================================================
-   CURRENCY STATE
-========================================================= */
+// --------------------------------------------------
+// Payment state
+// --------------------------------------------------
 
 let selectedCurrency = 'GHS';
 
+let paymentSession = null;
 
-/* =========================================================
-   PAYMENT MESSAGE
-========================================================= */
+let paymentReady = false;
+
+
+// --------------------------------------------------
+// Display applicant information
+// --------------------------------------------------
+
+applicantNameElement.textContent =
+    applicantName || 'Applicant';
+
+applicantEmailElement.textContent =
+    applicantEmail || 'Email unavailable';
+
+
+// --------------------------------------------------
+// Payment message helper
+// --------------------------------------------------
 
 function showPaymentMessage(message, type = 'info') {
 
-  paymentMessage.textContent = message;
+    paymentMessage.textContent = message;
 
-  paymentMessage.className =
-    `dfir-payment-message ${type}`;
+    paymentMessage.className =
+        `dfir-payment-message ${type}`;
 
-  paymentMessage.style.display = 'block';
-
+    paymentMessage.style.display = 'block';
 }
 
 
-/* =========================================================
-   UPDATE PAYMENT UI
-========================================================= */
+// --------------------------------------------------
+// Update currency UI
+// --------------------------------------------------
 
 function updateCurrencyUI() {
-  const price =
-    DIGITAL_FORENSICS_PRICES[selectedCurrency];
 
-  if (selectedCurrency === 'GHS') {
-    totalAmount.textContent =
-      price.displayAmount;
+    const isGHS =
+        selectedCurrency === 'GHS';
 
-    paymentMethods.textContent =
-      'Mobile Money (MTN, Telecel, AT) & Cards';
 
-    payNowBtn.innerHTML = `
-      Pay ${price.displayAmount} with Paystack
-      <i class="ti ti-arrow-right"></i>
-    `;
+    ghsBtn.classList.toggle(
+        'active',
+        isGHS
+    );
 
-    ghsBtn.classList.add('active');
+    usdBtn.classList.toggle(
+        'active',
+        !isGHS
+    );
 
-    usdBtn.classList.remove('active');
 
-  }
+    ghsAmount.style.display =
+        isGHS ? 'block' : 'none';
 
-  else {
-    totalAmount.textContent =
-      price.displayAmount;
+    usdAmount.style.display =
+        isGHS ? 'none' : 'block';
 
-    paymentMethods.textContent =
-      'International Visa / Mastercard';
 
-    payNowBtn.innerHTML = `
-      Pay ${price.displayAmount} with Paystack
-      <i class="ti ti-arrow-right"></i>
-    `;
-
-    usdBtn.classList.add('active');
-
-    ghsBtn.classList.remove('active');
-
-  }
-
+    payNowBtn.innerHTML =
+        isGHS
+            ? 'Pay GH₵1,200 with Paystack <i class="ti ti-arrow-right"></i>'
+            : 'Pay $120 with Paystack <i class="ti ti-arrow-right"></i>';
 }
 
 
-/* =========================================================
-   CURRENCY BUTTONS
-========================================================= */
-
-ghsBtn.addEventListener('click', () => {
-
-  if (payNowBtn.disabled) {
-    return;
-  }
-
-  selectedCurrency = 'GHS';
-
-  updateCurrencyUI();
-
-});
-
-
-usdBtn.addEventListener('click', () => {
-
-  if (payNowBtn.disabled) {
-    return;
-  }
-
-  selectedCurrency = 'USD';
-
-  updateCurrencyUI();
-
-});
-
-
-/* =========================================================
-   INITIALIZE PAYMENT ON SERVER
-========================================================= */
+// --------------------------------------------------
+// Initialize payment on server
+// --------------------------------------------------
 
 async function initializePayment() {
 
-  if (!applicantEmail) {
+    if (!applicantEmail) {
 
-    throw new Error(
-      'Your applicant information could not be found. Please return to the application and try again.'
-    );
+        throw new Error(
+            'Applicant email could not be found. Please return to the application page and try again.'
+        );
 
-  }
+    }
 
-
-  const response =
-    await fetch('/api/initialize-digital-forensics-payment', {
-
-      method: 'POST',
-
-      headers: {
-        'Content-Type':
-          'application/json'
-      },
-
-      body: JSON.stringify({
-
-        email:
-          applicantEmail,
-
-        name:
-          applicantName || '',
-
-        currency:
-          selectedCurrency
-
-      })
-
-    });
-
-
-  let result;
-
-  try {
-
-    result =
-      await response.json();
-
-  } catch (error) {
-
-    throw new Error(
-      'The payment server returned an unexpected response.'
-    );
-
-  }
-
-
-  if (!response.ok) {
-
-    throw new Error(
-      result.error ||
-      'We could not initialize your payment.'
-    );
-
-  }
-
-
-  if (!result.accessCode) {
-
-    throw new Error(
-      'Paystack did not return a valid payment session.'
-    );
-
-  }
-
-  const expectedPrice =
-    DIGITAL_FORENSICS_PRICES[selectedCurrency];
-
-  if (
-    result.track !== 'digital_forensics' ||
-    result.currency !== selectedCurrency ||
-    result.amount !== expectedPrice.amount
-  ) {
-    throw new Error(
-      'The payment amount could not be confirmed. Please refresh the page and try again.'
-    );
-  }
-
-  totalAmount.textContent =
-    expectedPrice.displayAmount;
-
-  return result;
-
-}
-
-
-/* =========================================================
-   OPEN PAYSTACK
-========================================================= */
-
-async function startPaystackPayment() {
-
-  if (!applicantEmail) {
-
-    showPaymentMessage(
-      'Your applicant information could not be found. Please return to the application and try again.',
-      'error'
-    );
-
-    return;
-
-  }
-
-
-  payNowBtn.disabled = true;
-
-  ghsBtn.disabled = true;
-
-  usdBtn.disabled = true;
-
-
-  payNowBtn.innerHTML = `
-    <i class="ti ti-loader-2 dfir-spin"></i>
-    Initializing payment...
-  `;
-
-
-  showPaymentMessage(
-    'Connecting securely to Paystack...',
-    'info'
-  );
-
-
-  try {
-
-    const payment =
-      await initializePayment();
-
-
-    /*
-      Paystack InlineJS v2
-
-      The backend has already determined:
-      - amount
-      - currency
-      - payment reference
-
-      The browser only receives the access code.
-    */
-
-    const popup =
-      new PaystackPop();
-
-
-    popup.resumeTransaction(
-      payment.accessCode,
-
-      {
-
-        onSuccess: function(transaction) {
-
-          /*
-            Do NOT treat this callback alone
-            as proof of payment.
-
-            The transaction must be verified
-            server-side.
-          */
-
-          showPaymentMessage(
-            'Payment received. Verifying your transaction...',
-            'info'
-          );
-
-
-          verifyPaymentOnServer(
-            transaction.reference
-          );
-
-        },
-
-
-        onCancel: function() {
-
-          resetPaymentButton();
-
-          showPaymentMessage(
-            'Payment was cancelled. You can try again when you are ready.',
-            'error'
-          );
-
-        },
-
-
-        onError: function(error) {
-
-          console.error(
-            'Paystack error:',
-            error
-          );
-
-          resetPaymentButton();
-
-          showPaymentMessage(
-            'Paystack could not complete the payment. Please try again.',
-            'error'
-          );
-
-        }
-
-      }
-
-    );
-
-
-  } catch (error) {
-
-    console.error(
-      'Payment initialization error:',
-      error
-    );
-
-    resetPaymentButton();
-
-    showPaymentMessage(
-      error.message ||
-      'We could not start your payment. Please try again.',
-      'error'
-    );
-
-  }
-
-}
-
-
-/* =========================================================
-   SERVER-SIDE PAYMENT VERIFICATION
-========================================================= */
-
-async function verifyPaymentOnServer(reference) {
-
-  try {
 
     const response =
-      await fetch('/api/verify-payment', {
+        await fetch(
+            '/api/initialize-payment',
+            {
+                method: 'POST',
 
-        method: 'POST',
+                headers: {
+                    'Content-Type':
+                        'application/json'
+                },
 
-        headers: {
-          'Content-Type':
-            'application/json'
-        },
+                body: JSON.stringify({
 
-        body: JSON.stringify({
+                    email:
+                        applicantEmail,
 
-          reference
+                    name:
+                        applicantName || '',
 
-        })
+                    track:
+                        'digital_forensics',
 
-      });
+                    currency:
+                        selectedCurrency
+
+                })
+            }
+        );
 
 
     let result;
 
     try {
 
-      result =
-        await response.json();
+        result =
+            await response.json();
 
     } catch (error) {
 
-      throw new Error(
-        'Invalid verification response.'
-      );
+        throw new Error(
+            'The payment server returned an unexpected response.'
+        );
 
     }
 
 
-    if (!response.ok || !result.verified) {
+    if (
+        !response.ok ||
+        !result.accessCode
+    ) {
 
-      throw new Error(
-        result.error ||
-        'Your payment could not be verified.'
-      );
+        throw new Error(
+            result.error ||
+            'We could not initialize your payment. Please try again.'
+        );
+
+    }
+
+
+    // Confirm the server returned the expected
+    // amount and currency for the selected option.
+
+    const expectedAmount =
+        selectedCurrency === 'GHS'
+            ? 120000
+            : 12000;
+
+
+    if (
+        result.amount !== expectedAmount ||
+        result.currency !== selectedCurrency
+    ) {
+
+        throw new Error(
+            'The payment amount could not be confirmed. Please refresh and try again.'
+        );
+
+    }
+
+
+    return result;
+}
+
+
+// --------------------------------------------------
+// Prepare payment
+// --------------------------------------------------
+
+async function preparePayment() {
+
+    if (!applicantEmail) {
+
+        showPaymentMessage(
+            'Your applicant information could not be found. Please return to the application and try again.',
+            'error'
+        );
+
+        return;
+    }
+
+
+    paymentReady = false;
+
+    paymentSession = null;
+
+
+    payNowBtn.disabled = true;
+
+    payNowBtn.innerHTML = `
+        <i class="ti ti-loader-2 dfir-spin"></i>
+        Preparing payment...
+    `;
+
+
+    showPaymentMessage(
+        'Preparing your secure payment...',
+        'info'
+    );
+
+
+    try {
+
+        paymentSession =
+            await initializePayment();
+
+
+        paymentReady = true;
+
+
+        payNowBtn.disabled = false;
+
+
+        payNowBtn.innerHTML =
+            selectedCurrency === 'GHS'
+                ? 'Pay GH₵1,200 with Paystack <i class="ti ti-arrow-right"></i>'
+                : 'Pay $120 with Paystack <i class="ti ti-arrow-right"></i>';
+
+
+        showPaymentMessage(
+            'Your payment is ready. Click the button to continue.',
+            'success'
+        );
+
+
+    } catch (error) {
+
+        console.error(
+            'Payment preparation error:',
+            error
+        );
+
+
+        paymentReady = false;
+
+        paymentSession = null;
+
+        payNowBtn.disabled = false;
+
+
+        payNowBtn.innerHTML =
+            'Try Payment Again <i class="ti ti-refresh"></i>';
+
+
+        showPaymentMessage(
+            error.message ||
+            'We could not prepare your payment. Please try again.',
+            'error'
+        );
+
+    }
+
+}
+
+
+// --------------------------------------------------
+// Currency selection
+// --------------------------------------------------
+
+ghsBtn.addEventListener(
+    'click',
+    function() {
+
+        if (selectedCurrency === 'GHS') {
+            return;
+        }
+
+
+        selectedCurrency = 'GHS';
+
+        updateCurrencyUI();
+
+        preparePayment();
+
+    }
+);
+
+
+usdBtn.addEventListener(
+    'click',
+    function() {
+
+        if (selectedCurrency === 'USD') {
+            return;
+        }
+
+
+        selectedCurrency = 'USD';
+
+        updateCurrencyUI();
+
+        preparePayment();
+
+    }
+);
+
+
+// --------------------------------------------------
+// Start Paystack payment
+// --------------------------------------------------
+
+function startPaystackPayment() {
+
+    if (
+        !paymentReady ||
+        !paymentSession
+    ) {
+
+        showPaymentMessage(
+            'Your payment is still being prepared. Please wait a moment and try again.',
+            'info'
+        );
+
+        preparePayment();
+
+        return;
+
+    }
+
+
+    if (
+        typeof PaystackPop === 'undefined'
+    ) {
+
+        showPaymentMessage(
+            'Payment service could not be loaded. Please refresh the page and try again.',
+            'error'
+        );
+
+        return;
 
     }
 
 
     /*
-      Only redirect after the server confirms
-      the payment.
+      IMPORTANT:
+
+      resumeTransaction() happens directly from
+      the user's click. There is no await before it.
+
+      This helps prevent the browser from treating
+      Paystack as an unsolicited popup.
     */
 
-    window.location.href =
-      './success.html?reference=' +
-      encodeURIComponent(reference);
+    payNowBtn.disabled = true;
 
-
-  } catch (error) {
-
-    console.error(
-      'Payment verification error:',
-      error
-    );
-
-    resetPaymentButton();
 
     showPaymentMessage(
-      error.message ||
-      'We could not verify your payment. Please contact Cybanext support.',
-      'error'
+        'Opening secure Paystack checkout...',
+        'info'
     );
 
-  }
+
+    const popup =
+        new PaystackPop();
+
+
+    popup.resumeTransaction(
+        paymentSession.accessCode,
+        {
+
+            onSuccess:
+                function(transaction) {
+
+                    showPaymentMessage(
+                        'Payment received. Verifying your transaction...',
+                        'info'
+                    );
+
+
+                    verifyPaymentOnServer(
+                        transaction.reference
+                    );
+
+                },
+
+
+            onCancel:
+                function() {
+
+                    payNowBtn.disabled =
+                        false;
+
+
+                    showPaymentMessage(
+                        'Payment was cancelled. You can try again when you are ready.',
+                        'error'
+                    );
+
+                },
+
+
+            onError:
+                function(error) {
+
+                    console.error(
+                        'Paystack error:',
+                        error
+                    );
+
+
+                    payNowBtn.disabled =
+                        false;
+
+
+                    showPaymentMessage(
+                        'Paystack could not complete the payment. Please try again.',
+                        'error'
+                    );
+
+                }
+
+        }
+    );
 
 }
 
 
-/* =========================================================
-   RESET PAYMENT BUTTON
-========================================================= */
+// --------------------------------------------------
+// Server-side payment verification
+// --------------------------------------------------
 
-function resetPaymentButton() {
+async function verifyPaymentOnServer(
+    reference
+) {
 
-  payNowBtn.disabled = false;
+    if (!reference) {
 
-  ghsBtn.disabled = false;
+        payNowBtn.disabled =
+            false;
 
-  usdBtn.disabled = false;
 
-  updateCurrencyUI();
+        showPaymentMessage(
+            'No payment reference was received. Please try again.',
+            'error'
+        );
+
+        return;
+
+    }
+
+
+    try {
+
+        const response =
+            await fetch(
+                '/api/verify-payment',
+                {
+                    method: 'POST',
+
+                    headers: {
+                        'Content-Type':
+                            'application/json'
+                    },
+
+                    body: JSON.stringify({
+                        reference
+                    })
+
+                }
+            );
+
+
+        let result;
+
+        try {
+
+            result =
+                await response.json();
+
+        } catch (error) {
+
+            throw new Error(
+                'Invalid verification response.'
+            );
+
+        }
+
+
+        if (
+            !response.ok ||
+            !result.verified
+        ) {
+
+            throw new Error(
+                result.error ||
+                'Your payment could not be verified.'
+            );
+
+        }
+
+
+        /*
+          Only redirect after server verification.
+        */
+
+        window.location.href =
+            './success.html?reference=' +
+            encodeURIComponent(reference);
+
+    } catch (error) {
+
+        console.error(
+            'Payment verification error:',
+            error
+        );
+
+
+        payNowBtn.disabled =
+            false;
+
+
+        showPaymentMessage(
+            error.message ||
+            'We could not verify your payment. Please contact Cybanext support.',
+            'error'
+        );
+
+    }
 
 }
 
 
-/* =========================================================
-   PAY BUTTON
-========================================================= */
+// --------------------------------------------------
+// Pay button
+// --------------------------------------------------
 
 payNowBtn.addEventListener(
-  'click',
-  startPaystackPayment
+    'click',
+    startPaystackPayment
 );
 
 
-/* =========================================================
-   INITIAL UI
-========================================================= */
+// --------------------------------------------------
+// Initial UI + payment preparation
+// --------------------------------------------------
 
 updateCurrencyUI();
+
+preparePayment();

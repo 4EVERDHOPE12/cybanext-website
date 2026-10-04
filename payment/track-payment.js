@@ -1,18 +1,39 @@
-const applicantNameElement = document.getElementById('applicantName');
-const applicantEmailElement = document.getElementById('applicantEmail');
-const selectedTrackElement = document.getElementById('selectedTrack');
-const payNowBtn = document.getElementById('payNowBtn');
-const paymentMessage = document.getElementById('paymentMessage');
+const applicantNameElement =
+    document.getElementById('applicantName');
+
+const applicantEmailElement =
+    document.getElementById('applicantEmail');
+
+const selectedTrackElement =
+    document.getElementById('selectedTrack');
+
+const payNowBtn =
+    document.getElementById('payNowBtn');
+
+const paymentMessage =
+    document.getElementById('paymentMessage');
 
 
 // --------------------------------------------------
-// Get applicant information
+// Applicant information
 // --------------------------------------------------
 
-const applicantName = sessionStorage.getItem('applicantName');
-const applicantEmail = sessionStorage.getItem('applicantEmail');
-const selectedTrack = sessionStorage.getItem('selectedTrack');
-const applicantTrackLabel = sessionStorage.getItem('applicantTrackLabel');
+const applicantName =
+    sessionStorage.getItem('applicantName');
+
+const applicantEmail =
+    sessionStorage.getItem('applicantEmail');
+
+const selectedTrack =
+    sessionStorage.getItem('selectedTrack');
+
+const applicantTrackLabel =
+    sessionStorage.getItem('applicantTrackLabel');
+
+
+// --------------------------------------------------
+// Guard against wrong payment page
+// --------------------------------------------------
 
 if (
     selectedTrack?.trim().toLowerCase().replace(/[\s-]+/g, '_') ===
@@ -26,13 +47,23 @@ if (
 // Display applicant information
 // --------------------------------------------------
 
-applicantNameElement.textContent = applicantName || 'Applicant';
+applicantNameElement.textContent =
+    applicantName || 'Applicant';
 
 applicantEmailElement.textContent =
     applicantEmail || 'Email unavailable';
 
 selectedTrackElement.textContent =
     applicantTrackLabel || 'Selected Track';
+
+
+// --------------------------------------------------
+// Payment state
+// --------------------------------------------------
+
+let paymentSession = null;
+
+let paymentReady = false;
 
 
 // --------------------------------------------------
@@ -46,11 +77,12 @@ function showPaymentMessage(message, type = 'info') {
     paymentMessage.className =
         `dfir-payment-message ${type}`;
 
+    paymentMessage.style.display = 'block';
 }
 
 
 // --------------------------------------------------
-// Initialize payment on the server
+// Initialize payment on server
 // --------------------------------------------------
 
 async function initializePayment() {
@@ -68,52 +100,149 @@ async function initializePayment() {
     }
 
 
-    const response = await fetch('/api/initialize-payment', {
+    const response = await fetch(
+        '/api/initialize-payment',
+        {
+            method: 'POST',
 
-        method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
 
-        headers: {
-            'Content-Type': 'application/json'
-        },
-
-        body: JSON.stringify({
-
-            email: applicantEmail,
-
-            name: applicantName || '',
-
-            track: selectedTrack
-
-        })
-
-    });
+            body: JSON.stringify({
+                email: applicantEmail,
+                name: applicantName || '',
+                track: selectedTrack
+            })
+        }
+    );
 
 
-    const result = await response.json();
+    let result;
+
+    try {
+        result = await response.json();
+    } catch (error) {
+        throw new Error(
+            'The payment server returned an unexpected response.'
+        );
+    }
 
 
     if (!response.ok || !result.accessCode) {
-
         throw new Error(
             result.error ||
             'We could not initialize your payment. Please try again.'
         );
+    }
 
+
+    // Confirm the server selected the correct regular-track price.
+    if (
+        result.track !== selectedTrack ||
+        result.amount !== 3000 ||
+        result.currency !== 'USD'
+    ) {
+        throw new Error(
+            'The payment amount could not be confirmed. Please refresh and try again.'
+        );
     }
 
 
     return result;
-
 }
 
 
 // --------------------------------------------------
-// Start Paystack payment
+// Prepare payment before user clicks
 // --------------------------------------------------
 
-async function startPaystackPayment() {
+async function preparePayment() {
 
-    if (payNowBtn.disabled) {
+    if (!applicantEmail || !selectedTrack) {
+        showPaymentMessage(
+            'Your applicant information could not be found. Please return to the application and try again.',
+            'error'
+        );
+
+        return;
+    }
+
+
+    payNowBtn.disabled = true;
+
+    payNowBtn.innerHTML = `
+        <i class="ti ti-loader-2 dfir-spin"></i>
+        Preparing payment...
+    `;
+
+
+    showPaymentMessage(
+        'Preparing your secure payment...',
+        'info'
+    );
+
+
+    try {
+
+        paymentSession =
+            await initializePayment();
+
+        paymentReady = true;
+
+
+        payNowBtn.disabled = false;
+
+        payNowBtn.innerHTML =
+            'Pay $30 with Paystack <i class="ti ti-arrow-right"></i>';
+
+
+        showPaymentMessage(
+            'Your payment is ready. Click the button to continue.',
+            'success'
+        );
+
+
+    } catch (error) {
+
+        console.error(
+            'Payment preparation error:',
+            error
+        );
+
+
+        paymentReady = false;
+
+        payNowBtn.disabled = false;
+
+        payNowBtn.innerHTML =
+            'Try Payment Again <i class="ti ti-refresh"></i>';
+
+
+        showPaymentMessage(
+            error.message ||
+            'We could not prepare your payment. Please try again.',
+            'error'
+        );
+    }
+}
+
+
+// --------------------------------------------------
+// Open Paystack
+// --------------------------------------------------
+
+function startPaystackPayment() {
+
+    if (!paymentReady || !paymentSession) {
+
+        showPaymentMessage(
+            'Your payment is still being prepared. Please wait a moment and try again.',
+            'info'
+        );
+
+        preparePayment();
+
         return;
     }
 
@@ -129,160 +258,143 @@ async function startPaystackPayment() {
     }
 
 
-    payNowBtn.disabled = true;
+    /*
+      IMPORTANT:
 
-    payNowBtn.innerHTML =
-        'Initializing payment...';
+      There is no await before resumeTransaction().
+
+      The user click directly triggers Paystack,
+      which prevents the browser from treating
+      the checkout as an unsolicited popup.
+    */
+
+    payNowBtn.disabled = true;
 
 
     showPaymentMessage(
-        'Preparing your secure payment...',
+        'Opening secure Paystack checkout...',
         'info'
     );
 
 
-    try {
-
-        // Initialize transaction through our server
-        const payment = await initializePayment();
+    const popup =
+        new PaystackPop();
 
 
-        showPaymentMessage(
-            'Opening secure Paystack checkout...',
-            'info'
-        );
+    popup.resumeTransaction(
+        paymentSession.accessCode,
+        {
+
+            onSuccess: function(transaction) {
+
+                showPaymentMessage(
+                    'Payment received. Verifying your transaction...',
+                    'info'
+                );
 
 
-        // Open Paystack using the server-generated access code
-        const popup = new PaystackPop();
+                verifyPaymentOnServer(
+                    transaction.reference
+                );
+            },
 
 
-        popup.resumeTransaction(
-            payment.accessCode,
-            {
+            onCancel: function() {
 
-                onSuccess: function (transaction) {
+                payNowBtn.disabled = false;
 
-                    // Never trust the browser callback alone.
-                    // The transaction must be verified by our server.
-                    verifyPaymentOnServer(
-                        transaction.reference
-                    );
-
-                },
+                showPaymentMessage(
+                    'Payment was cancelled. You can try again when you are ready.',
+                    'error'
+                );
+            },
 
 
-                onCancel: function () {
+            onError: function(error) {
 
-                    showPaymentMessage(
-                        'Payment was cancelled. You can try again when you are ready.',
-                        'info'
-                    );
-
-                    resetPaymentButton();
-
-                },
+                console.error(
+                    'Paystack error:',
+                    error
+                );
 
 
-                onError: function () {
+                payNowBtn.disabled = false;
 
-                    showPaymentMessage(
-                        'The payment could not be completed. Please try again.',
-                        'error'
-                    );
 
-                    resetPaymentButton();
-
-                }
-
+                showPaymentMessage(
+                    'Paystack could not complete the payment. Please try again.',
+                    'error'
+                );
             }
-        );
 
-
-    } catch (error) {
-
-        console.error(
-            'Payment initialization error:',
-            error
-        );
-
-
-        showPaymentMessage(
-            error.message ||
-            'Something went wrong while preparing your payment.',
-            'error'
-        );
-
-
-        resetPaymentButton();
-
-    }
-
+        }
+    );
 }
 
 
 // --------------------------------------------------
-// Verify payment through our server
+// Server-side verification
 // --------------------------------------------------
 
 async function verifyPaymentOnServer(reference) {
 
     if (!reference) {
 
+        payNowBtn.disabled = false;
+
         showPaymentMessage(
             'No payment reference was received. Please try again.',
             'error'
         );
 
-        resetPaymentButton();
-
         return;
     }
 
 
-    showPaymentMessage(
-        'Verifying your payment...',
-        'info'
-    );
-
-
-    payNowBtn.disabled = true;
-
-
     try {
 
-        const response = await fetch(
-            '/api/verify-payment',
-            {
+        const response =
+            await fetch(
+                '/api/verify-payment',
+                {
+                    method: 'POST',
 
-                method: 'POST',
+                    headers: {
+                        'Content-Type':
+                            'application/json'
+                    },
 
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-
-                body: JSON.stringify({
-                    reference
-                })
-
-            }
-        );
+                    body: JSON.stringify({
+                        reference
+                    })
+                }
+            );
 
 
-        const result = await response.json();
+        let result;
+
+        try {
+            result = await response.json();
+        } catch (error) {
+            throw new Error(
+                'Invalid verification response.'
+            );
+        }
 
 
         if (!response.ok || !result.verified) {
 
             throw new Error(
                 result.error ||
-                'Payment verification failed.'
+                'Your payment could not be verified.'
             );
-
         }
 
 
-        // Only redirect after server verification succeeds
+        /*
+          Only redirect after server verification.
+        */
+
         window.location.href =
             './success.html?reference=' +
             encodeURIComponent(reference);
@@ -296,39 +408,30 @@ async function verifyPaymentOnServer(reference) {
         );
 
 
+        payNowBtn.disabled = false;
+
+
         showPaymentMessage(
             error.message ||
             'We could not verify your payment. Please contact Cybanext support.',
             'error'
         );
-
-
-        resetPaymentButton();
-
     }
-
 }
 
 
 // --------------------------------------------------
-// Reset payment button
-// --------------------------------------------------
-
-function resetPaymentButton() {
-
-    payNowBtn.disabled = false;
-
-    payNowBtn.innerHTML =
-        'Pay $30 with Paystack <i class="ti ti-arrow-right"></i>';
-
-}
-
-
-// --------------------------------------------------
-// Start payment
+// Payment button
 // --------------------------------------------------
 
 payNowBtn.addEventListener(
     'click',
     startPaystackPayment
 );
+
+
+// --------------------------------------------------
+// Prepare payment immediately when page loads
+// --------------------------------------------------
+
+preparePayment();
