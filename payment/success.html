@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-    <title>Payment Successful | Cybanext</title>
+    <title>Payment Verification | Cybanext</title>
     <meta
         name="description"
         content="Your Cybanext payment has been successfully verified."
@@ -32,15 +32,15 @@
                     CYBANEXT INTERNSHIP PROGRAM
                 </span>
 
-                <div class="payment-result-icon payment-result-success">
+                <div id="paymentResultIcon" class="payment-result-icon payment-result-success">
                     <i class="ti ti-circle-check"></i>
                 </div>
 
-                <h1>Payment Successful</h1>
+                <h1 id="paymentResultTitle">Payment Verification</h1>
 
                 <p>
-                    Your payment has been successfully verified.
-                    Your registration can now proceed to the next stage.
+                    We are verifying your payment securely.
+                    Please wait while we confirm the transaction.
                 </p>
 
             </div>
@@ -75,6 +75,10 @@
             <div class="payment-result-note">
 
                 <i class="ti ti-info-circle"></i>
+
+                <p id="paymentStatus" aria-live="polite">
+                    Verifying your payment...
+                </p>
 
                 <p>
                     Keep your payment reference for your records.
@@ -111,8 +115,17 @@
         new URLSearchParams(window.location.search);
 
     const reference =
-        params.get('reference');
+        params.get('reference') ||
+        sessionStorage.getItem('pendingPaymentReference');
 
+    const titleElement =
+        document.getElementById('paymentResultTitle');
+
+    const iconElement =
+        document.getElementById('paymentResultIcon');
+
+    const statusElement =
+        document.getElementById('paymentStatus');
 
     document.getElementById('applicantName').textContent =
         applicantName || 'Applicant';
@@ -122,6 +135,85 @@
 
     document.getElementById('paymentReference').textContent =
         reference || 'Unavailable';
+
+    function setVerificationState(type, title, message) {
+        titleElement.textContent = title;
+        statusElement.textContent = message;
+        iconElement.className =
+            `payment-result-icon payment-result-${type}`;
+
+        if (type === 'success') {
+            iconElement.innerHTML = '<i class="ti ti-circle-check"></i>';
+        } else if (type === 'error') {
+            iconElement.innerHTML = '<i class="ti ti-circle-x"></i>';
+        } else {
+            iconElement.innerHTML = '<i class="ti ti-loader-2 dfir-spin"></i>';
+        }
+    }
+
+    async function verifyPayment() {
+        if (!reference) {
+            setVerificationState(
+                'error',
+                'Payment Could Not Be Verified',
+                'No payment reference was found.'
+            );
+            return;
+        }
+
+        setVerificationState(
+            'info',
+            'Verifying Payment',
+            'Verifying your payment securely...'
+        );
+
+        try {
+            const response = await fetch('/api/verify-payment', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ reference })
+            });
+
+            let result;
+
+            try {
+                result = await response.json();
+            } catch (error) {
+                throw new Error('Invalid verification response.');
+            }
+
+            if (!response.ok || !result.verified) {
+                throw new Error(
+                    result.error ||
+                    'Your payment could not be verified.'
+                );
+            }
+
+            setVerificationState(
+                'success',
+                'Payment Successful',
+                'Payment verified successfully. Your registration can now proceed to the next stage.'
+            );
+
+            sessionStorage.removeItem('pendingPaymentReference');
+            sessionStorage.removeItem('pendingPaymentTrack');
+            sessionStorage.removeItem('pendingPaymentCurrency');
+
+        } catch (error) {
+            console.error('Payment verification error:', error);
+
+            setVerificationState(
+                'error',
+                'Payment Could Not Be Verified',
+                error.message ||
+                    'We could not verify your payment. Please contact Cybanext support.'
+            );
+        }
+    }
+
+    verifyPayment();
 </script>
 
 </body>
