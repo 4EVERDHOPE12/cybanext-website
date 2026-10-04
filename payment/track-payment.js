@@ -1,13 +1,39 @@
-const applicantNameElement = document.getElementById('applicantName');
-const applicantEmailElement = document.getElementById('applicantEmail');
-const selectedTrackElement = document.getElementById('selectedTrack');
-const payNowBtn = document.getElementById('payNowBtn');
-const paymentMessage = document.getElementById('paymentMessage');
+const applicantNameElement =
+    document.getElementById('applicantName');
 
-const applicantName = sessionStorage.getItem('applicantName');
-const applicantEmail = sessionStorage.getItem('applicantEmail');
-const selectedTrack = sessionStorage.getItem('selectedTrack');
-const applicantTrackLabel = sessionStorage.getItem('applicantTrackLabel');
+const applicantEmailElement =
+    document.getElementById('applicantEmail');
+
+const selectedTrackElement =
+    document.getElementById('selectedTrack');
+
+const payNowBtn =
+    document.getElementById('payNowBtn');
+
+const paymentMessage =
+    document.getElementById('paymentMessage');
+
+
+// --------------------------------------------------
+// Applicant information
+// --------------------------------------------------
+
+const applicantName =
+    sessionStorage.getItem('applicantName');
+
+const applicantEmail =
+    sessionStorage.getItem('applicantEmail');
+
+const selectedTrack =
+    sessionStorage.getItem('selectedTrack');
+
+const applicantTrackLabel =
+    sessionStorage.getItem('applicantTrackLabel');
+
+
+// --------------------------------------------------
+// Guard against wrong payment page
+// --------------------------------------------------
 
 if (
     selectedTrack?.trim().toLowerCase().replace(/[\s-]+/g, '_') ===
@@ -16,18 +42,36 @@ if (
     window.location.replace('./digital-forensics.html');
 }
 
-applicantNameElement.textContent = applicantName || 'Applicant';
-applicantEmailElement.textContent = applicantEmail || 'Email unavailable';
-selectedTrackElement.textContent = applicantTrackLabel || 'Selected Track';
 
-let paymentSession = null;
-let paymentReady = false;
+// --------------------------------------------------
+// Display applicant information
+// --------------------------------------------------
+
+applicantNameElement.textContent =
+    applicantName || 'Applicant';
+
+applicantEmailElement.textContent =
+    applicantEmail || 'Email unavailable';
+
+selectedTrackElement.textContent =
+    applicantTrackLabel || 'Selected Track';
+
+
+// --------------------------------------------------
+// Payment message helper
+// --------------------------------------------------
 
 function showPaymentMessage(message, type = 'info') {
     paymentMessage.textContent = message;
-    paymentMessage.className = `dfir-payment-message ${type}`;
+    paymentMessage.className =
+        `dfir-payment-message ${type}`;
     paymentMessage.style.display = 'block';
 }
+
+
+// --------------------------------------------------
+// Initialize payment on the server
+// --------------------------------------------------
 
 async function initializePayment() {
     if (!applicantEmail) {
@@ -42,27 +86,32 @@ async function initializePayment() {
         );
     }
 
-    const response = await fetch('/api/initialize-payment', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-            email: applicantEmail,
-            name: applicantName || '',
-            track: selectedTrack
-        })
-    });
+    const response = await fetch(
+        '/api/initialize-payment',
+        {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                email: applicantEmail,
+                name: applicantName || '',
+                track: selectedTrack
+            })
+        }
+    );
 
     let result;
 
     try {
         result = await response.json();
     } catch (error) {
-        throw new Error('The payment server returned an unexpected response.');
+        throw new Error(
+            'The payment server returned an unexpected response.'
+        );
     }
 
-    if (!response.ok || !result.accessCode || !result.authorizationUrl) {
+    if (!response.ok || !result.authorizationUrl) {
         throw new Error(
             result.error ||
             'We could not initialize your payment. Please try again.'
@@ -82,7 +131,12 @@ async function initializePayment() {
     return result;
 }
 
-async function preparePayment() {
+
+// --------------------------------------------------
+// Start Paystack hosted checkout
+// --------------------------------------------------
+
+async function startPaystackPayment() {
     if (!applicantEmail || !selectedTrack) {
         showPaymentMessage(
             'Your applicant information could not be found. Please return to the application and try again.',
@@ -91,48 +145,51 @@ async function preparePayment() {
         return;
     }
 
-    paymentReady = false;
-    paymentSession = null;
     payNowBtn.disabled = true;
-    payNowBtn.innerHTML = '<i class="ti ti-loader-2 dfir-spin"></i> Preparing payment...';
 
-    showPaymentMessage('Preparing your secure payment...', 'info');
+    payNowBtn.innerHTML = `
+        <i class="ti ti-loader-2 dfir-spin"></i>
+        Opening Paystack...
+    `;
+
+    showPaymentMessage(
+        'Preparing your secure payment...',
+        'info'
+    );
 
     try {
-        paymentSession = await initializePayment();
-        paymentReady = true;
-        payNowBtn.disabled = false;
-        payNowBtn.innerHTML = 'Pay $30 with Paystack <i class="ti ti-arrow-right"></i>';
-        showPaymentMessage('Your payment is ready. Click the button to continue.', 'success');
-    } catch (error) {
-        console.error('Payment preparation error:', error);
-        paymentReady = false;
-        paymentSession = null;
-        payNowBtn.disabled = false;
-        payNowBtn.innerHTML = 'Try Payment Again <i class="ti ti-refresh"></i>';
+        const payment = await initializePayment();
+
         showPaymentMessage(
-            error.message || 'We could not prepare your payment. Please try again.',
+            'Redirecting you to secure Paystack checkout...',
+            'success'
+        );
+
+        // Hosted checkout avoids popup-blocking and is the redirect flow
+        // required for this payment stage.
+        window.location.href = payment.authorizationUrl;
+
+    } catch (error) {
+        console.error(
+            'Payment initialization error:',
+            error
+        );
+
+        payNowBtn.disabled = false;
+
+        payNowBtn.innerHTML =
+            'Try Payment Again <i class="ti ti-refresh"></i>';
+
+        showPaymentMessage(
+            error.message ||
+            'We could not prepare your payment. Please try again.',
             'error'
         );
     }
 }
 
-function startPaystackPayment() {
-    if (!paymentReady || !paymentSession?.authorizationUrl) {
-        preparePayment();
-        return;
-    }
 
-    payNowBtn.disabled = true;
-    showPaymentMessage('Opening secure Paystack checkout...', 'info');
-
-    sessionStorage.setItem('pendingPaymentReference', paymentSession.reference);
-    sessionStorage.setItem('pendingPaymentTrack', selectedTrack);
-
-    // Hosted checkout is the most reliable completion method for a server-created
-    // transaction and keeps the secret key entirely on the server.
-    window.location.href = paymentSession.authorizationUrl;
-}
-
-payNowBtn.addEventListener('click', startPaystackPayment);
-preparePayment();
+payNowBtn.addEventListener(
+    'click',
+    startPaystackPayment
+);
