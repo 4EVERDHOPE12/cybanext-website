@@ -1857,6 +1857,17 @@ a {
   margin-bottom: 32px;
 }
 
+.success-page-eyebrow {
+  display: block;
+  text-align: center;
+}
+
+.success-page-home-button {
+  display: flex !important;
+  width: fit-content;
+  margin: 20px auto 0;
+}
+
 
 .dfir-eyebrow {
   display: inline-block;
