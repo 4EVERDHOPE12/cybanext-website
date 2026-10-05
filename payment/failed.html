@@ -57,6 +57,12 @@
 
             </div>
 
+            <p
+                class="dfir-payment-message"
+                id="retryMessage"
+                aria-live="polite"
+                style="display:none;"
+            ></p>
 
             <div class="payment-result-actions">
 
@@ -87,27 +93,65 @@
 
 
 <script>
-    const selectedTrack =
-        sessionStorage.getItem('selectedTrack');
-
+    const selectedTrack = sessionStorage.getItem('selectedTrack');
+    const applicantEmail = sessionStorage.getItem('applicantEmail');
+    const qualificationToken = sessionStorage.getItem('qualificationToken');
+    const retryMessage = document.getElementById('retryMessage');
     const tryAgainBtn =
         document.getElementById('tryAgainBtn');
 
-
-    tryAgainBtn.addEventListener('click', () => {
-
-        if (selectedTrack === 'digital_forensics') {
-
-            window.location.href =
-                './digital-forensics.html';
-
+    tryAgainBtn.addEventListener('click', async () => {
+        if (!selectedTrack || !applicantEmail || !qualificationToken) {
+            retryMessage.textContent =
+                'Your qualified application could not be found. Return to the application page and complete CV screening before paying.';
+            retryMessage.className = 'dfir-payment-message error';
+            retryMessage.style.display = 'block';
             return;
         }
 
+        tryAgainBtn.disabled = true;
+        tryAgainBtn.textContent = 'Preparing secure checkout...';
+        retryMessage.textContent = '';
+        retryMessage.style.display = 'none';
 
-        window.location.href =
-            './track-payment.html';
+        const isDigitalForensics = selectedTrack === 'digital_forensics';
+        const pricingOption =
+            sessionStorage.getItem('selectedPricingOption') || 'GHS';
+        const response = await fetch(
+            isDigitalForensics
+                ? '../api/initialize-digital-forensics-payment'
+                : '../api/initialize-payment',
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    email: applicantEmail,
+                    track: selectedTrack,
+                    qualificationToken,
+                    ...(isDigitalForensics ? { pricingOption } : {})
+                })
+            }
+        );
+        const result = await response.json();
 
+        if (!response.ok || !result.authorizationUrl) {
+            throw new Error(
+                result.error || 'We could not start the payment. Please try again.'
+            );
+        }
+
+        window.location.href = result.authorizationUrl;
+    } catch (error) {
+        console.error('Payment retry initialization error:', error);
+        retryMessage.textContent =
+            error.message || 'We could not start the payment. Please try again.';
+        retryMessage.className = 'dfir-payment-message error';
+        retryMessage.style.display = 'block';
+        tryAgainBtn.disabled = false;
+        tryAgainBtn.innerHTML =
+            'Try Payment Again <i class="ti ti-refresh"></i>';
     });
 </script>
 

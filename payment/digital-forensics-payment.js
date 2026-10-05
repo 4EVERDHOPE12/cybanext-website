@@ -1,155 +1,146 @@
-const applicantNameElement =
-    document.getElementById('applicantName');
+const applicantNameElement = document.getElementById('applicantName');
+const applicantEmailElement = document.getElementById('applicantEmail');
+const applicantPhoneElement = document.getElementById('applicantPhone');
+const ghsBtn = document.getElementById('ghsBtn');
+const usdBtn = document.getElementById('usdBtn');
+const totalAmount = document.getElementById('totalAmount');
+const paymentMethods = document.getElementById('paymentMethods');
+const conversionNote = document.getElementById('conversionNote');
+const payNowBtn = document.getElementById('payNowBtn');
+const paymentMessage = document.getElementById('paymentMessage');
 
-const applicantEmailElement =
-    document.getElementById('applicantEmail');
+const applicantName = sessionStorage.getItem('applicantName');
+const applicantEmail = sessionStorage.getItem('applicantEmail');
+const applicantPhone = sessionStorage.getItem('applicantPhone');
+const qualificationToken = sessionStorage.getItem('qualificationToken');
+const selectedTrack = sessionStorage.getItem('selectedTrack');
 
-const ghsBtn =
-    document.getElementById('ghsBtn');
+applicantNameElement.textContent = applicantName || 'Applicant';
+applicantEmailElement.textContent = applicantEmail || 'Email unavailable';
+applicantPhoneElement.textContent = applicantPhone || 'Not provided';
 
-const usdBtn =
-    document.getElementById('usdBtn');
+if (!qualificationToken || selectedTrack !== 'digital_forensics') {
+    window.location.replace('../index.html#applicationForm');
+}
 
-const totalAmount =
-    document.getElementById('totalAmount');
-
-const paymentMethods =
-    document.getElementById('paymentMethods');
-
-const conversionNote =
-    document.getElementById('conversionNote');
-
-const payNowBtn =
-    document.getElementById('payNowBtn');
-
-const paymentMessage =
-    document.getElementById('paymentMessage');
-
-
-// --------------------------------------------------
-// Applicant information
-// --------------------------------------------------
-
-const applicantName =
-    sessionStorage.getItem('applicantName');
-
-const applicantEmail =
-    sessionStorage.getItem('applicantEmail');
-
-
-applicantNameElement.textContent =
-    applicantName || 'Applicant';
-
-applicantEmailElement.textContent =
-    applicantEmail || 'Email unavailable';
-
-
-// --------------------------------------------------
-// Currency state
-// --------------------------------------------------
-
-let selectedCurrency = 'GHS';
-
-
-// --------------------------------------------------
-// Payment message helper
-// --------------------------------------------------
+let selectedCurrency =
+    sessionStorage.getItem('selectedPricingOption') === 'USD_REFERENCE'
+        ? 'USD'
+        : 'GHS';
+let digitalForensicsPrices = null;
 
 function showPaymentMessage(message, type = 'info') {
     paymentMessage.textContent = message;
-    paymentMessage.className =
-        `dfir-payment-message ${type}`;
+    paymentMessage.className = `dfir-payment-message ${type}`;
     paymentMessage.style.display = 'block';
 }
 
+function getSelectedPrice() {
+    if (!digitalForensicsPrices) {
+        throw new Error('Current payment prices are not available.');
+    }
 
-// --------------------------------------------------
-// Update visible payment details
-// --------------------------------------------------
+    return selectedCurrency === 'GHS'
+        ? digitalForensicsPrices.GHS
+        : digitalForensicsPrices.USD_REFERENCE;
+}
+
+function formatGhs(amount, showCents = false) {
+    return `GH₵${Number(amount).toLocaleString('en-GH', {
+        minimumFractionDigits: showCents ? 2 : 0,
+        maximumFractionDigits: 2
+    })}`;
+}
 
 function updateCurrencyUI() {
     const isGHS = selectedCurrency === 'GHS';
+    const price = getSelectedPrice();
+    const chargeAmount = formatGhs(price.chargeAmountGhs, !isGHS);
 
     ghsBtn.classList.toggle('active', isGHS);
     usdBtn.classList.toggle('active', !isGHS);
-
-    totalAmount.textContent =
-        isGHS ? 'GH₵1,200' : 'GH₵1,386.00';
-
-    paymentMethods.textContent =
-        'Mobile Money (MTN, Telecel, AT) & Cards';
-
+    totalAmount.textContent = chargeAmount;
+    paymentMethods.textContent = 'Mobile Money (MTN, Telecel, AT) & Cards';
     payNowBtn.innerHTML =
-        isGHS
-            ? 'Pay GH₵1,200 with Paystack <i class="ti ti-arrow-right"></i>'
-            : 'Pay GH₵1,386.00 with Paystack <i class="ti ti-arrow-right"></i>';
+        `Pay ${chargeAmount} with Paystack <i class="ti ti-arrow-right"></i>`;
 
-    if (conversionNote) {
-        conversionNote.innerHTML = isGHS
-            ? 'Local price: <strong>GH₵1,200</strong>. Paystack will charge you in GHS.'
-            : 'Advertised international price: <strong>$120 USD</strong> &nbsp;•&nbsp; Checkout amount: <strong>GH₵1,386.00</strong><br>Conversion rate used: <strong>GH₵11.55 / $1</strong>. Paystack will charge you in GHS.';
+    conversionNote.textContent = isGHS
+        ? `Local price: ${chargeAmount}. Paystack will charge you in ${price.paystackCurrency}.`
+        : `International reference price: $${price.referenceAmount} ${price.referenceCurrency}. Paystack checkout: ${chargeAmount}. Conversion rate: GH₵${price.exchangeRate} per USD. Paystack will charge you in ${price.paystackCurrency}.`;
+}
+
+async function loadPaymentPrices() {
+    try {
+        const response = await fetch('/api/payment-prices');
+        const result = await response.json();
+
+        if (
+            !response.ok ||
+            !result.digitalForensics?.GHS ||
+            !result.digitalForensics?.USD_REFERENCE
+        ) {
+            throw new Error(
+                result.error || 'Current payment prices could not be loaded.'
+            );
+        }
+
+        digitalForensicsPrices = result.digitalForensics;
+        updateCurrencyUI();
+        ghsBtn.disabled = false;
+        usdBtn.disabled = false;
+        payNowBtn.disabled = false;
+    } catch (error) {
+        console.error('Could not load Digital Forensics prices:', error);
+        showPaymentMessage(
+            error.message || 'Current payment prices could not be loaded.',
+            'error'
+        );
     }
 }
 
-
-// --------------------------------------------------
-// Initialize selected currency on the server
-// --------------------------------------------------
-
 async function initializePayment() {
-    if (!applicantEmail) {
+    if (!applicantEmail || !qualificationToken) {
         throw new Error(
-            'Applicant email could not be found. Please return to the application page and try again.'
+            'Your qualified application could not be found. Please return to the application page and complete CV screening.'
         );
     }
 
-    const response = await fetch(
-        '/api/initialize-digital-forensics-payment',
-        {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                email: applicantEmail,
-                name: applicantName || '',
-                currency: selectedCurrency
-            })
-        }
-    );
+    const pricingOption =
+        selectedCurrency === 'GHS' ? 'GHS' : 'USD_REFERENCE';
+    const expectedPrice = getSelectedPrice();
+    const response = await fetch('/api/initialize-digital-forensics-payment', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            email: applicantEmail,
+            track: selectedTrack,
+            pricingOption,
+            qualificationToken
+        })
+    });
 
     let result;
-
     try {
         result = await response.json();
     } catch (error) {
-        throw new Error(
-            'The payment server returned an unexpected response.'
-        );
+        throw new Error('The payment server returned an unexpected response.');
     }
-
-    const expectedAmount =
-        selectedCurrency === 'GHS'
-            ? 120000
-            : 138600;
-
-    const expectedGhsAmount =
-        selectedCurrency === 'GHS'
-            ? 1200
-            : 1386;
 
     if (!response.ok || !result.authorizationUrl) {
         throw new Error(
-            result.error ||
-            'We could not initialize your payment. Please try again.'
+            result.error || 'We could not initialize your payment. Please try again.'
         );
     }
 
     if (
         result.track !== 'digital_forensics' ||
-        Number(result.amount) !== expectedAmount ||
-        result.currency !== 'GHS' ||
-        Number(result.chargeAmountGhs) !== expectedGhsAmount
+        result.currency !== expectedPrice.paystackCurrency ||
+        Number(result.chargeAmountGhs) !== expectedPrice.chargeAmountGhs ||
+        result.pricingOption !== pricingOption ||
+        Number(result.referenceAmount) !== expectedPrice.referenceAmount ||
+        result.referenceCurrency !== expectedPrice.referenceCurrency
     ) {
         throw new Error(
             'The selected payment amount could not be confirmed. Please try again.'
@@ -159,97 +150,61 @@ async function initializePayment() {
     return result;
 }
 
-
-// --------------------------------------------------
-// Start hosted Paystack checkout
-// --------------------------------------------------
-
 async function startPaystackPayment() {
-    if (!applicantEmail) {
+    if (!applicantEmail || !qualificationToken || !digitalForensicsPrices) {
         showPaymentMessage(
-            'Your applicant information could not be found. Please return to the application and try again.',
+            'Your qualified application or current prices could not be found. Please return to the application page and try again.',
             'error'
         );
         return;
     }
 
     payNowBtn.disabled = true;
-
-    payNowBtn.innerHTML = `
-        <i class="ti ti-loader-2 dfir-spin"></i>
-        Opening Paystack...
-    `;
-
-    showPaymentMessage(
-        `Preparing your ${selectedCurrency} payment...`,
-        'info'
-    );
+    payNowBtn.innerHTML = '<i class="ti ti-loader-2 dfir-spin"></i> Opening Paystack...';
+    showPaymentMessage(`Preparing your ${selectedCurrency} payment...`, 'info');
 
     try {
         const payment = await initializePayment();
-
         showPaymentMessage(
             'Redirecting you to secure Paystack checkout...',
             'success'
         );
-
         window.location.href = payment.authorizationUrl;
-
     } catch (error) {
-        console.error(
-            'Digital Forensics payment initialization error:',
-            error
-        );
-
-        payNowBtn.disabled = false;
-
+        console.error('Digital Forensics payment initialization error:', error);
         updateCurrencyUI();
-
+        payNowBtn.disabled = false;
         showPaymentMessage(
-            error.message ||
-            'We could not prepare your payment. Please try again.',
+            error.message || 'We could not prepare your payment. Please try again.',
             'error'
         );
     }
 }
 
-
-// --------------------------------------------------
-// Currency buttons
-// --------------------------------------------------
-
 ghsBtn.addEventListener('click', () => {
     if (selectedCurrency === 'GHS') return;
 
     selectedCurrency = 'GHS';
+    sessionStorage.setItem('selectedPricingOption', 'GHS');
     updateCurrencyUI();
     showPaymentMessage(
-        'GHS selected. Paystack will charge GH₵1,200.',
+        `GHS selected. Paystack will charge ${formatGhs(getSelectedPrice().chargeAmountGhs)}.`,
         'info'
     );
 });
-
 
 usdBtn.addEventListener('click', () => {
     if (selectedCurrency === 'USD') return;
 
     selectedCurrency = 'USD';
+    sessionStorage.setItem('selectedPricingOption', 'USD_REFERENCE');
     updateCurrencyUI();
+    const price = getSelectedPrice();
     showPaymentMessage(
-        'USD reference selected. $120 ≈ GH₵1,386.00 at GH₵11.55/USD. Paystack will charge you in GHS.',
+        `USD reference selected. $${price.referenceAmount} ≈ ${formatGhs(price.chargeAmountGhs, true)} at GH₵${price.exchangeRate}/USD. Paystack will charge you in GHS.`,
         'info'
     );
 });
 
-
-payNowBtn.addEventListener(
-    'click',
-    startPaystackPayment
-);
-
-
-// --------------------------------------------------
-// Initial UI
-// --------------------------------------------------
-
-updateCurrencyUI();
+payNowBtn.addEventListener('click', startPaystackPayment);
+loadPaymentPrices();

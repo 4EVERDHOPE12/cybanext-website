@@ -77,7 +77,8 @@
           <p>
             Your CV has passed the initial qualification
             screening. Select your payment currency below
-            to continue your registration.
+            to continue your registration. This is a one-month,
+            hands-on program held on Saturdays and Sundays.
           </p>
 
         </div>
@@ -97,6 +98,11 @@
           <div>
             <span>Email</span>
             <strong id="applicantEmail">Loading...</strong>
+          </div>
+
+          <div>
+            <span>Phone</span>
+            <strong id="applicantPhone">Loading...</strong>
           </div>
 
         </div>
@@ -119,6 +125,7 @@
               class="dfir-currency-btn active"
               id="ghsBtn"
               data-currency="GHS"
+              disabled
             >
               GHS (GH₵)
             </button>
@@ -128,6 +135,7 @@
               class="dfir-currency-btn"
               id="usdBtn"
               data-currency="USD"
+              disabled
             >
               USD ($)
             </button>
@@ -168,16 +176,14 @@
           <div class="dfir-invoice-divider"></div>
 
           <p id="conversionNote" class="dfir-payment-message" style="display:block; margin:16px 0 0;">
-            Local price: <strong>GH₵1,200</strong>. Paystack will charge you in GHS.
+            Loading verified server pricing...
           </p>
 
           <div class="dfir-total-row">
 
             <span>Total Payable</span>
 
-            <strong id="totalAmount">
-              GH₵1,200
-            </strong>
+            <strong id="totalAmount">Loading...</strong>
 
           </div>
 
@@ -192,8 +198,9 @@
           type="button"
           class="dfir-pay-button"
           id="payNowBtn"
+          disabled
         >
-          Pay GH₵1,200 with Paystack
+          Loading payment options...
           <i class="ti ti-arrow-right"></i>
         </button>
 
@@ -219,12 +226,6 @@
 
   </main>
 
-
-  <!-- =========================================
-       PAYSTACK
-  ========================================== -->
-
-  <script src="https://js.paystack.co/v2/inline.js"></script>
 
   <!-- Cybanext Digital Forensics Payment Logic -->
   <script src="./digital-forensics-payment.js"></script>

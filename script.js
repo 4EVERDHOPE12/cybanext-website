@@ -43,19 +43,97 @@ if (hamburgerBtn && mainNav) {
   });
 }
 
-const heroApplyBtn = document.getElementById('heroApplyBtn');
-const heroApplicationForm = document.getElementById('applicationForm');
+const regularTrackPriceNote =
+  document.getElementById('regularTrackPriceNote');
+const digitalForensicsPrice =
+  document.getElementById('digitalForensicsPrice');
 
-if (heroApplyBtn && heroApplicationForm) {
-  heroApplyBtn.addEventListener('click', () => {
-    if (mainNav && mainNav.classList.contains('open')) {
+if (regularTrackPriceNote || digitalForensicsPrice) {
+  fetch('/api/payment-prices')
+    .then(async (response) => {
+      const prices = await response.json();
+
+      if (!response.ok || !prices.regular || !prices.digitalForensics) {
+        throw new Error(
+          prices.error || 'Unable to retrieve current program prices.'
+        );
+      }
+
+      const formatGhs = (amount) =>
+        Number(amount).toLocaleString('en-GH', {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
+        });
+      const regularReferencePrice =
+        prices.regular.referenceCurrency === 'USD'
+          ? `$${prices.regular.referenceAmount} USD`
+          : `GH₵${prices.regular.referenceAmount}`;
+
+      if (regularTrackPriceNote) {
+        regularTrackPriceNote.textContent =
+          `The first 5 tracks are free to explore. The ${regularReferencePrice} certification fee (approximately GH₵${formatGhs(prices.regular.chargeAmountGhs)}) applies before accessing course content. Paystack charges this fee in ${prices.regular.paystackCurrency}. Digital Forensics is priced separately above.`;
+      }
+
+      if (digitalForensicsPrice) {
+        digitalForensicsPrice.textContent =
+          `GH₵${formatGhs(prices.digitalForensics.GHS.chargeAmountGhs)} (Local) / $${prices.digitalForensics.USD_REFERENCE.referenceAmount} (International; Paystack charges GH₵${formatGhs(prices.digitalForensics.USD_REFERENCE.chargeAmountGhs)} in GHS)`;
+      }
+    })
+    .catch((error) => {
+      console.error('Could not load current program prices:', error);
+      if (regularTrackPriceNote) {
+        regularTrackPriceNote.textContent =
+          'Certification fee information is temporarily unavailable.';
+      }
+      if (digitalForensicsPrice) {
+        digitalForensicsPrice.textContent =
+          'Digital Forensics pricing is temporarily unavailable.';
+      }
+    });
+}
+
+const bannerDfBtn = document.getElementById('bannerDfApplyBtn');
+
+if (bannerDfBtn) {
+  bannerDfBtn.addEventListener('click', () => {
+    const trackSelect = document.getElementById('track');
+
+    if (trackSelect) {
+      const digitalForensicsOption = Array.from(trackSelect.options).find((option) => {
+        const optionText = option.text.toLowerCase();
+        const optionValue = option.value.toLowerCase();
+
+        return (
+          optionText.includes('digital forensics') ||
+          optionValue.includes('digital-forensics') ||
+          optionValue.includes('digital_forensics')
+        );
+      });
+
+      if (digitalForensicsOption) {
+        trackSelect.value = digitalForensicsOption.value;
+        trackSelect.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    }
+
+    if (typeof closeDrawer === 'function') {
       closeDrawer();
     }
 
-    heroApplicationForm.scrollIntoView({
-      behavior: 'smooth',
-      block: 'start'
-    });
+    const applicationForm = document.getElementById('applicationForm');
+    const cvDropzone = document.getElementById('cvDropzone');
+    const scrollTarget = cvDropzone || applicationForm;
+
+    if (scrollTarget) {
+      scrollTarget.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start'
+      });
+
+      if (cvDropzone) {
+        cvDropzone.focus({ preventScroll: true });
+      }
+    }
   });
 }
 
@@ -192,8 +270,11 @@ if (applicationForm) {
 
     const fullName = document.getElementById('fullName');
     const email = document.getElementById('email');
+    const phone = document.getElementById('phone');
     const track = document.getElementById('track');
     const reason = document.getElementById('reason');
+    sessionStorage.removeItem('qualificationToken');
+    sessionStorage.removeItem('selectedPricingOption');
 
     const showStatus = (message, type = 'info') => {
       if (!applicationStatus) return;
@@ -326,6 +407,9 @@ if (applicationForm) {
       const scanFormData = new FormData();
 
       scanFormData.append('cv', cvFile);
+      scanFormData.append('fullName', fullName.value.trim());
+      scanFormData.append('email', email.value.trim());
+      scanFormData.append('phone', phone ? phone.value.trim() : '');
       scanFormData.append('track', track.value);
 
       const scanResponse = await fetch('/api/scan-cv', {
@@ -367,6 +451,12 @@ if (applicationForm) {
         }
 
         return;
+      }
+
+      if (!scanResult.qualificationToken) {
+        throw new Error(
+          'We could not confirm your CV screening. Please try submitting your application again.'
+        );
       }
 
       /* -----------------------------------------
@@ -443,6 +533,16 @@ if (applicationForm) {
         selectedTrackLabel
       );
 
+      sessionStorage.setItem(
+        'applicantPhone',
+        phone ? phone.value.trim() : ''
+      );
+
+      sessionStorage.setItem(
+        'qualificationToken',
+        scanResult.qualificationToken
+      );
+
       /* -----------------------------------------
          STEP 5: SEND QUALIFIED APPLICANT TO PAYMENT
          ----------------------------------------- */
@@ -452,15 +552,37 @@ if (applicationForm) {
         'success'
       );
 
-      setTimeout(() => {
-        if (track.value === 'digital_forensics') {
-          window.location.href =
-            './payment/digital-forensics.html';
-        } else {
-          window.location.href =
-            './payment/track-payment.html';
+      if (track.value === 'digital_forensics') {
+        window.location.href = './payment/digital-forensics.html';
+        return;
+      }
+
+      try {
+        const paymentResponse = await fetch('/api/initialize-payment', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            email: email.value.trim(),
+            track: track.value,
+            qualificationToken: scanResult.qualificationToken
+          })
+        });
+        const paymentResult = await paymentResponse.json();
+
+        if (!paymentResponse.ok || !paymentResult.authorizationUrl) {
+          throw new Error(
+            paymentResult.error ||
+            'We could not start the payment. Please try again.'
+          );
         }
-      }, 800);
+
+        window.location.href = paymentResult.authorizationUrl;
+      } catch (paymentError) {
+        console.error('Regular-track payment initialization error:', paymentError);
+        window.location.href = './payment/failed.html';
+      }
 
     } catch (error) {
       console.error(

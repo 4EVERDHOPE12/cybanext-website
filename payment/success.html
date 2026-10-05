@@ -85,6 +85,16 @@
                 <i class="ti ti-arrow-right"></i>
             </a>
 
+            <a
+                href="./failed.html"
+                class="dfir-pay-button"
+                id="retryPaymentButton"
+                style="display:none;"
+            >
+                Return and Try Payment Again
+                <i class="ti ti-refresh"></i>
+            </a>
+
         </div>
 
     </div>
@@ -129,6 +139,9 @@
     const homeButton =
         document.getElementById('homeButton');
 
+    const retryPaymentButton =
+        document.getElementById('retryPaymentButton');
+
     nameElement.textContent =
         applicantName || 'Applicant';
 
@@ -147,6 +160,7 @@
         noteElement.innerHTML =
             '<i class="ti ti-alert-triangle"></i><p>Please return to the payment page and try again.</p>';
         homeButton.style.display = 'inline-flex';
+        retryPaymentButton.style.display = 'inline-flex';
         return;
     }
 
@@ -181,7 +195,7 @@
             'Payment Successful';
 
         messageElement.textContent =
-            'Your payment has been successfully verified. Your registration can now proceed to the next stage.';
+            'Your payment has been successfully verified. Our team will reach out within 2 business days to confirm your seat and share your class schedule.';
 
         iconElement.innerHTML =
             '<i class="ti ti-circle-check"></i>';
@@ -207,7 +221,7 @@
         noteElement.innerHTML =
             '<i class="ti ti-help-circle"></i><p>No registration payment has been confirmed yet. Return to the payment page and try again if you cancelled or encountered an error.</p>';
 
-        homeButton.style.display = 'inline-flex';
+        retryPaymentButton.style.display = 'inline-flex';
     }
 })();
 </script>
