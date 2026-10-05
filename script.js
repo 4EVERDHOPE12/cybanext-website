@@ -145,7 +145,7 @@ const cvDropzone = document.getElementById('cvDropzone');
 const cvUploadTitle = document.getElementById('cvUploadTitle');
 const cvUploadStatus = document.getElementById('cvUploadStatus');
 const cvDefaultTitle = 'Drop your Resume / CV here';
-const maxCvSize = 10 * 1024 * 1024;
+const maxCvSize = 4 * 1024 * 1024;
 
 /* =========================================================
    RESET CV UI
@@ -205,7 +205,7 @@ function validateCvFile(file) {
   }
   /* File size */
   else if (file.size > maxCvSize) {
-    message = 'File size exceeds 10MB. Please choose a smaller file.';
+    message = 'File size exceeds 4MB. Please choose a smaller file.';
   }
 
   /* Invalid file */
@@ -349,7 +349,7 @@ if (applicationForm) {
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
     ];
 
-    const maxFileSize = 10 * 1024 * 1024;
+    const maxFileSize = 4 * 1024 * 1024;
 
     const fileExtension = cvFile.name
       .split('.')
@@ -366,7 +366,7 @@ if (applicationForm) {
 
     if (cvFile.size > maxFileSize) {
       showStatus(
-        'Your CV is too large. Please upload a file smaller than 10MB.',
+        'Your CV is too large. Please upload a file smaller than 4MB.',
         'error'
       );
       return;
@@ -419,11 +419,22 @@ if (applicationForm) {
 
       let scanResult;
 
+      const scanResponseText = await scanResponse.text();
+
       try {
-        scanResult = await scanResponse.json();
+        scanResult = JSON.parse(scanResponseText);
       } catch (jsonError) {
+        if (
+          scanResponse.status === 413 ||
+          /request entity too large|payload too large/i.test(scanResponseText)
+        ) {
+          throw new Error(
+            'Your CV exceeds the 4MB upload limit. Please compress it or upload a smaller PDF or DOCX file.'
+          );
+        }
+
         throw new Error(
-          'We could not process the CV screening response.'
+          `The CV screening service returned an invalid response (HTTP ${scanResponse.status}). Please try again later.`
         );
       }
 

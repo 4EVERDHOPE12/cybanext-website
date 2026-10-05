@@ -19,7 +19,7 @@ module.exports = async function handler(req, res) {
 
   try {
     const form = formidable({
-      maxFileSize: 10 * 1024 * 1024,
+      maxFileSize: 4 * 1024 * 1024,
       multiples: false
     });
     const { fields, files } = await new Promise((resolve, reject) => {
@@ -117,7 +117,7 @@ module.exports = async function handler(req, res) {
       /maxFileSize|larger than/i.test(error.message || '')
     ) {
       return res.status(400).json({
-        error: 'Your CV is too large. Please upload a file smaller than 10MB.'
+        error: 'Your CV is too large. Please upload a file smaller than 4MB.'
       });
     }
 
