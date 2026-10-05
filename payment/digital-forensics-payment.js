@@ -16,6 +16,9 @@ const totalAmount =
 const paymentMethods =
     document.getElementById('paymentMethods');
 
+const conversionNote =
+    document.getElementById('conversionNote');
+
 const payNowBtn =
     document.getElementById('payNowBtn');
 
@@ -71,17 +74,21 @@ function updateCurrencyUI() {
     usdBtn.classList.toggle('active', !isGHS);
 
     totalAmount.textContent =
-        isGHS ? 'GH₵1,200' : '$120';
+        isGHS ? 'GH₵1,200' : 'GH₵1,386.00';
 
     paymentMethods.textContent =
-        isGHS
-            ? 'Mobile Money (MTN, Telecel, AT) & Cards'
-            : 'International Visa / Mastercard';
+        'Mobile Money (MTN, Telecel, AT) & Cards';
 
     payNowBtn.innerHTML =
         isGHS
             ? 'Pay GH₵1,200 with Paystack <i class="ti ti-arrow-right"></i>'
-            : 'Pay $120 with Paystack <i class="ti ti-arrow-right"></i>';
+            : 'Pay GH₵1,386.00 with Paystack <i class="ti ti-arrow-right"></i>';
+
+    if (conversionNote) {
+        conversionNote.innerHTML = isGHS
+            ? 'Local price: <strong>GH₵1,200</strong>. Paystack will charge you in GHS.'
+            : 'Advertised international price: <strong>$120 USD</strong> &nbsp;•&nbsp; Checkout amount: <strong>GH₵1,386.00</strong><br>Conversion rate used: <strong>GH₵11.55 / $1</strong>. Paystack will charge you in GHS.';
+    }
 }
 
 
@@ -124,7 +131,12 @@ async function initializePayment() {
     const expectedAmount =
         selectedCurrency === 'GHS'
             ? 120000
-            : 12000;
+            : 138600;
+
+    const expectedGhsAmount =
+        selectedCurrency === 'GHS'
+            ? 1200
+            : 1386;
 
     if (!response.ok || !result.authorizationUrl) {
         throw new Error(
@@ -136,7 +148,8 @@ async function initializePayment() {
     if (
         result.track !== 'digital_forensics' ||
         Number(result.amount) !== expectedAmount ||
-        result.currency !== selectedCurrency
+        result.currency !== 'GHS' ||
+        Number(result.chargeAmountGhs) !== expectedGhsAmount
     ) {
         throw new Error(
             'The selected payment amount could not be confirmed. Please try again.'
@@ -211,7 +224,7 @@ ghsBtn.addEventListener('click', () => {
     selectedCurrency = 'GHS';
     updateCurrencyUI();
     showPaymentMessage(
-        'GHS selected. The payment amount is GH₵1,200.',
+        'GHS selected. Paystack will charge GH₵1,200.',
         'info'
     );
 });
@@ -223,7 +236,7 @@ usdBtn.addEventListener('click', () => {
     selectedCurrency = 'USD';
     updateCurrencyUI();
     showPaymentMessage(
-        'USD selected. The payment amount is $120.',
+        'USD reference selected. $120 ≈ GH₵1,386.00 at GH₵11.55/USD. Paystack will charge you in GHS.',
         'info'
     );
 });

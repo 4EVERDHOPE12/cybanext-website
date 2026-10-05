@@ -251,11 +251,11 @@ module.exports = async (req, res) => {
       track === 'digital_forensics'
     ) {
 
-      const selectedCurrency =
-        metadata?.selected_currency;
+      const pricingOption =
+        metadata?.pricing_option;
 
 
-      if (!selectedCurrency) {
+      if (!pricingOption) {
 
         return res.status(400).json({
 
@@ -270,7 +270,7 @@ module.exports = async (req, res) => {
 
 
       expectedPayment =
-        getPaymentPrice(track, selectedCurrency);
+        getPaymentPrice(track, pricingOption);
 
       if (!expectedPayment) {
         return res.status(400).json({
@@ -284,7 +284,7 @@ module.exports = async (req, res) => {
     else {
 
       expectedPayment =
-        getPaymentPrice(track);
+        getPaymentPrice(track, 'USD');
 
     }
 

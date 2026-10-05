@@ -120,8 +120,11 @@ async function initializePayment() {
 
     if (
         result.track !== selectedTrack ||
-        Number(result.amount) !== 3000 ||
-        result.currency !== 'USD'
+        Number(result.amount) !== 34650 ||
+        result.currency !== 'GHS' ||
+        Number(result.referenceAmount) !== 30 ||
+        result.referenceCurrency !== 'USD' ||
+        Number(result.chargeAmountGhs) !== 346.5
     ) {
         throw new Error(
             'The payment amount could not be confirmed. Please refresh and try again.'

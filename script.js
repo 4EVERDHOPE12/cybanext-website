@@ -43,6 +43,22 @@ if (hamburgerBtn && mainNav) {
   });
 }
 
+const heroApplyBtn = document.getElementById('heroApplyBtn');
+const heroApplicationForm = document.getElementById('applicationForm');
+
+if (heroApplyBtn && heroApplicationForm) {
+  heroApplyBtn.addEventListener('click', () => {
+    if (mainNav && mainNav.classList.contains('open')) {
+      closeDrawer();
+    }
+
+    heroApplicationForm.scrollIntoView({
+      behavior: 'smooth',
+      block: 'start'
+    });
+  });
+}
+
 /* =========================================================
    CV UPLOAD HELPERS
 ========================================================= */
