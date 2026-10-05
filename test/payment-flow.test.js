@@ -145,6 +145,23 @@ test('qualification tokens are signed, applicant-bound, and tamper evident', () 
   assert.equal(verifyQualificationToken('not-a-token'), null);
 });
 
+test('qualification tokens can use the configured Paystack TEST key as a fallback', () => {
+  const configuredTokenSecret = process.env.QUALIFICATION_TOKEN_SECRET;
+  const configuredPaystackSecret = process.env.PAYSTACK_SECRET_KEY;
+  delete process.env.QUALIFICATION_TOKEN_SECRET;
+
+  try {
+    const token = createApplicantToken();
+    assert.equal(
+      verifyQualificationToken(token).email,
+      'applicant@example.com'
+    );
+  } finally {
+    process.env.QUALIFICATION_TOKEN_SECRET = configuredTokenSecret;
+    process.env.PAYSTACK_SECRET_KEY = configuredPaystackSecret;
+  }
+});
+
 test('regular payment initialization ignores client price and currency', async (t) => {
   const paystack = stubPaystackRequest(t, {
     status: true,

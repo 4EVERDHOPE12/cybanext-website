@@ -19,7 +19,8 @@ module.exports = async function handler(req, res) {
 
   try {
     const form = formidable({
-      maxFileSize: 4 * 1024 * 1024,
+      maxFileSize: 10 * 1024 * 1024,
+      maxTotalFileSize: 10 * 1024 * 1024,
       multiples: false
     });
     const { fields, files } = await new Promise((resolve, reject) => {
@@ -98,12 +99,21 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ qualified: false });
     }
 
-    const qualificationToken = createQualificationToken({
-      name,
-      email,
-      phone,
-      track
-    });
+    let qualificationToken;
+
+    try {
+      qualificationToken = createQualificationToken({
+        name,
+        email,
+        phone,
+        track
+      });
+    } catch (error) {
+      console.error('Qualification token configuration error:', error);
+      return res.status(503).json({
+        error: 'CV screening is temporarily unavailable because secure payment configuration is missing. Please contact the site administrator.'
+      });
+    }
 
     return res.status(200).json({
       qualified: true,
@@ -117,7 +127,7 @@ module.exports = async function handler(req, res) {
       /maxFileSize|larger than/i.test(error.message || '')
     ) {
       return res.status(400).json({
-        error: 'Your CV is too large. Please upload a file smaller than 4MB.'
+        error: 'Your CV is too large. Please upload a file no larger than 10MB.'
       });
     }
 
