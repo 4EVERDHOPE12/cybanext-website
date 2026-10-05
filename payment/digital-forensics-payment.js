@@ -3,6 +3,7 @@ const applicantEmailElement = document.getElementById('applicantEmail');
 const applicantPhoneElement = document.getElementById('applicantPhone');
 const ghsBtn = document.getElementById('ghsBtn');
 const usdBtn = document.getElementById('usdBtn');
+const programPrice = document.getElementById('programPrice');
 const totalAmount = document.getElementById('totalAmount');
 const paymentMethods = document.getElementById('paymentMethods');
 const conversionNote = document.getElementById('conversionNote');
@@ -52,21 +53,28 @@ function formatGhs(amount, showCents = false) {
     })}`;
 }
 
+function formatUsd(amount) {
+    return `$${Number(amount).toFixed(2)}`;
+}
+
 function updateCurrencyUI() {
     const isGHS = selectedCurrency === 'GHS';
     const price = getSelectedPrice();
     const chargeAmount = formatGhs(price.chargeAmountGhs, !isGHS);
+    const displayedProgramPrice = isGHS
+        ? formatGhs(price.referenceAmount)
+        : formatUsd(price.referenceAmount);
 
     ghsBtn.classList.toggle('active', isGHS);
     usdBtn.classList.toggle('active', !isGHS);
+    programPrice.textContent = displayedProgramPrice;
     totalAmount.textContent = chargeAmount;
     paymentMethods.textContent = 'Mobile Money (MTN, Telecel, AT) & Cards';
     payNowBtn.innerHTML =
-        `Pay ${chargeAmount} with Paystack <i class="ti ti-arrow-right"></i>`;
+        `Pay ${displayedProgramPrice} with Paystack <i class="ti ti-arrow-right"></i>`;
 
-    conversionNote.textContent = isGHS
-        ? `Local price: ${chargeAmount}. Paystack will charge you in ${price.paystackCurrency}.`
-        : `International reference price: $${price.referenceAmount} ${price.referenceCurrency}. Paystack checkout: ${chargeAmount}. Conversion rate: GH₵${price.exchangeRate} per USD. Paystack will charge you in ${price.paystackCurrency}.`;
+    conversionNote.textContent = '';
+    conversionNote.hidden = true;
 }
 
 async function loadPaymentPrices() {
@@ -187,10 +195,6 @@ ghsBtn.addEventListener('click', () => {
     selectedCurrency = 'GHS';
     sessionStorage.setItem('selectedPricingOption', 'GHS');
     updateCurrencyUI();
-    showPaymentMessage(
-        `GHS selected. Paystack will charge ${formatGhs(getSelectedPrice().chargeAmountGhs)}.`,
-        'info'
-    );
 });
 
 usdBtn.addEventListener('click', () => {
@@ -199,11 +203,6 @@ usdBtn.addEventListener('click', () => {
     selectedCurrency = 'USD';
     sessionStorage.setItem('selectedPricingOption', 'USD_REFERENCE');
     updateCurrencyUI();
-    const price = getSelectedPrice();
-    showPaymentMessage(
-        `USD reference selected. $${price.referenceAmount} ≈ ${formatGhs(price.chargeAmountGhs, true)} at GH₵${price.exchangeRate}/USD. Paystack will charge you in GHS.`,
-        'info'
-    );
 });
 
 payNowBtn.addEventListener('click', startPaystackPayment);
