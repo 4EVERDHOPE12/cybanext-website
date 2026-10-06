@@ -71,23 +71,23 @@ if (regularTrackPriceNote || digitalForensicsPrice) {
 
       if (regularTrackPriceNote) {
         regularTrackPriceNote.textContent =
-          `The first 5 tracks are free to explore. The ${regularReferencePrice} certification fee (approximately GH₵${formatGhs(prices.regular.chargeAmountGhs)}) applies before accessing course content. Paystack charges this fee in ${prices.regular.paystackCurrency}. Digital Forensics is priced separately above.`;
+          `The first 5 tracks are free to explore. The ${regularReferencePrice} certification fee applies before accessing course content. Digital Forensics is priced separately above.`;
       }
 
       if (digitalForensicsPrice) {
         digitalForensicsPrice.textContent =
-          `GH₵${formatGhs(prices.digitalForensics.GHS.chargeAmountGhs)} (Local) / $${prices.digitalForensics.USD_REFERENCE.referenceAmount} (International; Paystack charges GH₵${formatGhs(prices.digitalForensics.USD_REFERENCE.chargeAmountGhs)} in GHS)`;
+          `GH₵${formatGhs(prices.digitalForensics.GHS.chargeAmountGhs)} (Local) / $${prices.digitalForensics.USD_REFERENCE.referenceAmount} (International)`;
       }
     })
     .catch((error) => {
       console.error('Could not load current program prices:', error);
       if (regularTrackPriceNote) {
         regularTrackPriceNote.textContent =
-          'Certification fee information is temporarily unavailable.';
+          'The first 5 tracks are free to explore. The $30 USD certification fee applies before accessing course content. Digital Forensics is priced separately above.';
       }
       if (digitalForensicsPrice) {
         digitalForensicsPrice.textContent =
-          'Digital Forensics pricing is temporarily unavailable.';
+          'GH₵1,200 (Local) / $120 (International)';
       }
     });
 }
