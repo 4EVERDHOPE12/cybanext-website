@@ -1,6 +1,7 @@
 const https = require('https');
 const { getPaymentPrice } = require('../lib/payment-prices');
 const { verifyQualificationToken } = require('../lib/qualification-token');
+const { findRegistration, updateRegistration } = require('../lib/digital-forensics-store');
 
 function verifyPaystackTransaction(reference) {
   return new Promise((resolve, reject) => {
@@ -104,10 +105,125 @@ module.exports = async (req, res) => {
     const metadata = parseMetadata(transaction.metadata);
     const track = metadata && metadata.track;
     const pricingOption = metadata && metadata.pricing_option;
+    const registrationId = metadata && metadata.registration_id;
     const qualificationClaims = metadata && verifyQualificationToken(
       metadata.qualification_token,
       { allowExpired: true }
     );
+
+    if (track === 'digital_forensics') {
+      if (!registrationId) {
+        return res.status(400).json({
+          verified: false,
+          error: 'Digital Forensics payment registration could not be verified.'
+        });
+      }
+
+      const registration = await findRegistration(registrationId);
+      if (!registration) {
+        return res.status(404).json({
+          verified: false,
+          error: 'The Digital Forensics registration could not be found.'
+        });
+      }
+
+      if (
+        registration.course !== 'digital_forensics' ||
+        registration.paymentReference !== reference ||
+        registration.pricingOption !== pricingOption
+      ) {
+        return res.status(400).json({
+          verified: false,
+          error: 'The Digital Forensics payment is not associated with this registration.'
+        });
+      }
+
+      if (!['GHS', 'USD_REFERENCE'].includes(pricingOption)) {
+        return res.status(400).json({
+          verified: false,
+          error: 'Payment pricing option could not be verified.'
+        });
+      }
+
+      const expectedPayment = getPaymentPrice(track, pricingOption);
+      const expectedPaystackAmount =
+        Math.round(Number(registration.expectedAmount) * 100);
+      if (
+        !expectedPayment ||
+        !Number.isSafeInteger(expectedPaystackAmount) ||
+        transaction.currency !== registration.expectedCurrency ||
+        Number(transaction.amount) !== expectedPaystackAmount ||
+        expectedPayment.paystackCurrency !== registration.expectedCurrency ||
+        !transaction.customer ||
+        typeof transaction.customer.email !== 'string' ||
+        transaction.customer.email.toLowerCase() !== registration.email
+      ) {
+        return res.status(400).json({
+          verified: false,
+          error: 'The Digital Forensics payment details could not be verified.'
+        });
+      }
+
+      if (
+        ['payment_verified', 'paid'].includes(registration.status) &&
+        registration.verifiedTransactionId === transaction.id
+      ) {
+        return res.status(200).json({
+          verified: true,
+          reference: transaction.reference,
+          track,
+          currency: transaction.currency,
+          registrationId
+        });
+      }
+
+      if (registration.status !== 'payment_initiated') {
+        return res.status(409).json({
+          verified: false,
+          error: 'The registration is not awaiting this payment.'
+        });
+      }
+
+      const updatedRegistration = await updateRegistration(registrationId, {
+        status: 'payment_verified',
+        verifiedTransactionId: transaction.id || null,
+        paymentVerificationTimestamp: new Date().toISOString()
+      }, {
+        expectedStatus: 'payment_initiated',
+        expectedPaymentReference: reference
+      });
+
+      if (!updatedRegistration) {
+        const latestRegistration = await findRegistration(registrationId);
+        if (
+          latestRegistration &&
+          latestRegistration.status === 'payment_verified' &&
+          latestRegistration.paymentReference === reference &&
+          latestRegistration.verifiedTransactionId === transaction.id
+        ) {
+          return res.status(200).json({
+            verified: true,
+            reference: transaction.reference,
+            track,
+            currency: transaction.currency,
+            registrationId
+          });
+        }
+
+        return res.status(409).json({
+          verified: false,
+          error: 'The registration changed while payment was being verified.'
+        });
+      }
+
+      return res.status(200).json({
+        verified: true,
+        reference: transaction.reference,
+        track,
+        currency: transaction.currency,
+        registrationId
+      });
+    }
 
     if (
       !qualificationClaims ||
@@ -160,7 +276,9 @@ module.exports = async (req, res) => {
       currency: transaction.currency
     });
   } catch (error) {
-    console.error('Payment verification error:', error);
+    console.error('Payment verification failed.', {
+      code: error && typeof error.code === 'string' ? error.code : 'unknown'
+    });
     return res.status(502).json({
       verified: false,
       error: 'We could not verify your payment. Please try again.'

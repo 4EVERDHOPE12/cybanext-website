@@ -19,9 +19,13 @@
   },
   "homepage": "https://github.com/4EVERDHOPE12/cybanext-website#readme",
   "dependencies": {
+    "@neondatabase/serverless": "^1.2.0",
     "@vercel/blob": "^2.8.0",
     "formidable": "^3.5.4",
     "mammoth": "^1.13.0",
     "pdf-parse": "^1.1.1"
+  },
+  "devDependencies": {
+    "vercel": "^64.5.0"
   }
 }

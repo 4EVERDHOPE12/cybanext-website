@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="referrer" content="no-referrer">
+  <title>Applicant Sign In | Cybanext</title>
+  <link rel="icon" type="image/png" href="assets/images/CYBANEXT ICON.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="applicant-auth.css">
+  <script src="applicant-login.js" defer></script>
+</head>
+<body>
+  <main class="auth-shell">
+    <a class="auth-logo" href="/" aria-label="Cybanext home">
+      <img src="assets/images/CYBANEXT NB (3).png" alt="Cybanext">
+    </a>
+    <section class="auth-card" aria-labelledby="login-title">
+      <p class="auth-eyebrow">Applicant portal</p>
+      <h1 id="login-title">Sign in to your account</h1>
+      <p class="auth-intro">Enter the email address you used to register. We’ll send you a secure sign-in link.</p>
+      <form id="applicantLoginForm">
+        <label for="email">Email address</label>
+        <input id="email" name="email" type="email" autocomplete="email" maxlength="254" required>
+        <button id="sendLinkButton" type="submit">Send me a login link</button>
+      </form>
+      <p id="authMessage" class="auth-message" role="status" aria-live="polite"></p>
+      <a class="auth-home-link" href="/">Return to Cybanext</a>
+    </section>
+  </main>
+</body>
+</html>

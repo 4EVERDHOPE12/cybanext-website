@@ -95,45 +95,14 @@ if (regularTrackPriceNote || digitalForensicsPrice) {
 const bannerDfBtn = document.getElementById('bannerDfApplyBtn');
 
 if (bannerDfBtn) {
-  bannerDfBtn.addEventListener('click', () => {
-    const trackSelect = document.getElementById('track');
-
-    if (trackSelect) {
-      const digitalForensicsOption = Array.from(trackSelect.options).find((option) => {
-        const optionText = option.text.toLowerCase();
-        const optionValue = option.value.toLowerCase();
-
-        return (
-          optionText.includes('digital forensics') ||
-          optionValue.includes('digital-forensics') ||
-          optionValue.includes('digital_forensics')
-        );
-      });
-
-      if (digitalForensicsOption) {
-        trackSelect.value = digitalForensicsOption.value;
-        trackSelect.dispatchEvent(new Event('change', { bubbles: true }));
-      }
-    }
+  bannerDfBtn.addEventListener('click', (event) => {
+    event.preventDefault();
 
     if (typeof closeDrawer === 'function') {
       closeDrawer();
     }
 
-    const applicationForm = document.getElementById('applicationForm');
-    const cvDropzone = document.getElementById('cvDropzone');
-    const scrollTarget = cvDropzone || applicationForm;
-
-    if (scrollTarget) {
-      scrollTarget.scrollIntoView({
-        behavior: 'smooth',
-        block: 'start'
-      });
-
-      if (cvDropzone) {
-        cvDropzone.focus({ preventScroll: true });
-      }
-    }
+    window.location.href = './digital-forensics.html';
   });
 }
 
@@ -558,15 +527,30 @@ if (applicationForm) {
          STEP 5: SEND QUALIFIED APPLICANT TO PAYMENT
          ----------------------------------------- */
 
+      if (track.value === 'digital_forensics') {
+        showStatus(
+          'Application submitted. Saving your Digital Forensics registration...',
+          'info'
+        );
+
+        await registerDigitalForensicsApplicant({
+          fullName: fullName.value.trim(),
+          email: email.value.trim(),
+          phone: phone ? phone.value.trim() : ''
+        });
+
+        showStatus(
+          'Registration saved successfully. Redirecting you to payment...',
+          'success'
+        );
+        window.location.href = './payment/digital-forensics.html';
+        return;
+      }
+
       showStatus(
         'Application submitted successfully. Redirecting you to payment...',
         'success'
       );
-
-      if (track.value === 'digital_forensics') {
-        window.location.href = './payment/digital-forensics.html';
-        return;
-      }
 
       try {
         const paymentResponse = await fetch('/api/initialize-payment', {

@@ -1,2 +1,11 @@
+
 node_modules/
+
+# Environment variables and secrets
 .env
+.env.*
+!.env.example
+
+# Local registration data and backups
+.data/
+.vercel

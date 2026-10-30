@@ -93,17 +93,16 @@
 
 
 <script>
-    const selectedTrack = sessionStorage.getItem('selectedTrack');
-    const applicantEmail = sessionStorage.getItem('applicantEmail');
-    const qualificationToken = sessionStorage.getItem('qualificationToken');
+    const registrationId = sessionStorage.getItem('digitalForensicsRegistrationId');
+    const applicantEmail = sessionStorage.getItem('digitalForensicsApplicantEmail');
     const retryMessage = document.getElementById('retryMessage');
     const tryAgainBtn =
         document.getElementById('tryAgainBtn');
 
     tryAgainBtn.addEventListener('click', async () => {
-        if (!selectedTrack || !applicantEmail || !qualificationToken) {
+        if (!registrationId || !applicantEmail) {
             retryMessage.textContent =
-                'Your qualified application could not be found. Return to the application page and complete CV screening before paying.';
+                'Your Digital Forensics registration could not be found. Return to the course page and complete the registration again.';
             retryMessage.className = 'dfir-payment-message error';
             retryMessage.style.display = 'block';
             return;
@@ -114,13 +113,10 @@
         retryMessage.textContent = '';
         retryMessage.style.display = 'none';
 
-        const isDigitalForensics = selectedTrack === 'digital_forensics';
         const pricingOption =
             sessionStorage.getItem('selectedPricingOption') || 'GHS';
         const response = await fetch(
-            isDigitalForensics
-                ? '../api/initialize-digital-forensics-payment'
-                : '../api/initialize-payment',
+            '../api/initialize-digital-forensics-payment',
             {
                 method: 'POST',
                 headers: {
@@ -128,9 +124,8 @@
                 },
                 body: JSON.stringify({
                     email: applicantEmail,
-                    track: selectedTrack,
-                    qualificationToken,
-                    ...(isDigitalForensics ? { pricingOption } : {})
+                    registrationId,
+                    pricingOption
                 })
             }
         );

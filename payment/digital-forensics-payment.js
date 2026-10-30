@@ -10,18 +10,17 @@ const conversionNote = document.getElementById('conversionNote');
 const payNowBtn = document.getElementById('payNowBtn');
 const paymentMessage = document.getElementById('paymentMessage');
 
-const applicantName = sessionStorage.getItem('applicantName');
-const applicantEmail = sessionStorage.getItem('applicantEmail');
-const applicantPhone = sessionStorage.getItem('applicantPhone');
-const qualificationToken = sessionStorage.getItem('qualificationToken');
-const selectedTrack = sessionStorage.getItem('selectedTrack');
+const registrationId = sessionStorage.getItem('digitalForensicsRegistrationId');
+const applicantName = sessionStorage.getItem('digitalForensicsApplicantName');
+const applicantEmail = sessionStorage.getItem('digitalForensicsApplicantEmail');
+const applicantPhone = sessionStorage.getItem('digitalForensicsApplicantPhone');
 
 applicantNameElement.textContent = applicantName || 'Applicant';
 applicantEmailElement.textContent = applicantEmail || 'Email unavailable';
 applicantPhoneElement.textContent = applicantPhone || 'Not provided';
 
-if (!qualificationToken || selectedTrack !== 'digital_forensics') {
-    window.location.replace('../index.html#applicationForm');
+if (!registrationId || !applicantEmail) {
+    window.location.replace('../index.html');
 }
 
 let selectedCurrency =
@@ -107,9 +106,9 @@ async function loadPaymentPrices() {
 }
 
 async function initializePayment() {
-    if (!applicantEmail || !qualificationToken) {
+    if (!registrationId || !applicantEmail) {
         throw new Error(
-            'Your qualified application could not be found. Please return to the application page and complete CV screening.'
+            'Your Digital Forensics registration could not be found. Please return and complete the registration form again.'
         );
     }
 
@@ -123,9 +122,8 @@ async function initializePayment() {
         },
         body: JSON.stringify({
             email: applicantEmail,
-            track: selectedTrack,
-            pricingOption,
-            qualificationToken
+            registrationId,
+            pricingOption
         })
     });
 
@@ -144,6 +142,7 @@ async function initializePayment() {
 
     if (
         result.track !== 'digital_forensics' ||
+        result.registrationId !== registrationId ||
         result.currency !== expectedPrice.paystackCurrency ||
         Number(result.chargeAmountGhs) !== expectedPrice.chargeAmountGhs ||
         result.pricingOption !== pricingOption ||
@@ -159,9 +158,9 @@ async function initializePayment() {
 }
 
 async function startPaystackPayment() {
-    if (!applicantEmail || !qualificationToken || !digitalForensicsPrices) {
+    if (!registrationId || !applicantEmail || !digitalForensicsPrices) {
         showPaymentMessage(
-            'Your qualified application or current prices could not be found. Please return to the application page and try again.',
+            'Your registration or current prices could not be found. Please return and complete the registration form again.',
             'error'
         );
         return;

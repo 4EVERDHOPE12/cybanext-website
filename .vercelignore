@@ -1,0 +1,21 @@
+# Local environment files and secrets
+.env*
+
+# Local credentials and private keys
+.aws
+.ssh
+.npmrc
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.secret
+*.credentials
+secrets
+secrets.*
+
+# Local-only state and Vercel metadata
+.data
+.vercel
