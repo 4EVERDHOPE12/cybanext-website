@@ -22,21 +22,75 @@ Never commit `.env` files or payment/database credentials. The repo indicates Ve
 
 The Digital Forensics API uses the Neon serverless PostgreSQL driver, which sends parameterized queries over HTTP and supports Node.js 19+. Create a PostgreSQL database with your managed provider; for Vercel, use a provider-issued serverless/pooled connection URL. Keep development, test, and production databases separate.
 
-Copy `.env.example` to `.env` for local development and set `DATABASE_URL` to the intended non-production database URL. Migrations are applied manually; the repository has no migration-history table or automatic migration runner. The Node/Neon runner defaults to a dry run and does not connect to the database:
+The migration runner requires `DATABASE_URL`, `MIGRATION_DEV_ENDPOINT_HOST`, and `MIGRATION_PRODUCTION_ENDPOINT_HOST`. These endpoint values are hostnames only, copied from Neon Connect after selecting the intended branch, compute endpoint, database, and role. Configure one hostname per target; the runner rejects missing or malformed values and rejects development and production hostnames that are identical (case-insensitive). It compares the URL hostname exactly with the selected target's configured hostname and checks `current_database()` is `neondb` before applying changes. It never prints the URL, credentials, or endpoint host.
+
+Hostname verification is not independent proof of Neon branch identity: PostgreSQL's database name and connection hostname do not prove the branch name. Before setting either allowlist value, independently select the intended branch in Neon Console, open **Connect**, confirm the branch and compute endpoint shown there, and copy that endpoint's hostname into the matching variable. Repeat this separately for development and production. Recheck this mapping after an endpoint is recreated. The runner also requires separate explicit development and production confirmation arguments.
+
+The runner defaults to dry-run mode and does not create a database client or execute SQL. Select a target explicitly:
 
 ```powershell
-node .\scripts\run-db-migrations.js
+node .\scripts\run-db-migrations.js --target=development
+node .\scripts\run-db-migrations.js --target=production
 ```
 
-For the dedicated test branch, execution requires both the explicit apply flag and an exact non-production target confirmation. Node loads `.env` without printing its contents:
+### Development branch
+
+The existing `dev/cybanext-phase2c-test` branch already has migrations 001 and 002 but has no migration history. For the first use of the runner, use the development-only adoption operation. It checks each expected column's type, nullability, default, generated/identity state; exact primary, unique, and check constraints and their validation status; foreign-key columns, referenced table/columns, delete action; and all expected indexes including uniqueness, key columns, access method, and exact partial-index predicate. Missing, extra, altered, or unvalidated objects cause adoption to stop. After schema inspection, the runner acquires the migration advisory lock and refuses adoption if migration history is nonempty. It records both current filenames and SHA-256 checksums without rerunning migration DDL. Use a private `.env` containing the verified development `DATABASE_URL` plus both distinct endpoint-host allowlist values:
 
 ```powershell
-node --env-file=.env .\scripts\run-db-migrations.js --apply --confirm-non-production=dev/cybanext-phase2c-test
+Invoke-CybanextMigration -EnvFile .env -RunnerArguments @('--target=development')
+Invoke-CybanextMigration -EnvFile .env -RunnerArguments @('--target=development', '--apply', '--confirm-development=dev/cybanext-phase2c-test', '--adopt-existing')
 ```
 
-The runner validates both reviewed files before execution, then applies each file's statements in order inside its own PostgreSQL transaction using the existing Neon driver. It does not submit a whole multi-statement script as one query, does not record migration history, and stops on the first error without retrying. The confirmation flag is an operator assertion; the runner does not independently identify the Neon branch from `DATABASE_URL`. Verify the endpoint in Neon Console before applying.
+After adoption, future development migrations use the normal apply path:
 
-Migration 001 commits before migration 002 begins. If an error occurs, do not blindly rerun. Inspect the target's catalogs for the expected tables, columns, indexes, and constraints to determine whether the failed migration rolled back or completed despite a connection error. `IF NOT EXISTS` does not repair a pre-existing object with a different definition; reconcile any mismatch before deciding how to proceed. Keep production and the isolated test branch separate.
+```powershell
+Invoke-CybanextMigration -EnvFile .env -RunnerArguments @('--target=development', '--apply', '--confirm-development=dev/cybanext-phase2c-test')
+```
+
+### Production branch
+
+Prepare a separate ignored local file such as `.env.production` from the verified Neon Production Connect details. It must contain the production `DATABASE_URL` and both distinct endpoint-host allowlist values; verify that the production hostname came from the Production branch's Connect dialog. Do not point `.env` at Production. This local migration procedure does not configure Vercel.
+
+**PowerShell environment isolation:** Node's `--env-file` does not override variables already present in the process environment. Use the helper below for dry-runs and apply commands. It temporarily clears the three database-target variables so Node loads them from the selected file, then restores the PowerShell process values. This prevents inherited values from silently taking precedence.
+
+```powershell
+function Invoke-CybanextMigration {
+  param([string]$EnvFile, [string[]]$RunnerArguments)
+  $names = @('DATABASE_URL', 'MIGRATION_DEV_ENDPOINT_HOST', 'MIGRATION_PRODUCTION_ENDPOINT_HOST')
+  $saved = @{}
+  try {
+    foreach ($name in $names) {
+      $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+      Remove-Item "Env:$name" -ErrorAction SilentlyContinue
+    }
+    & node "--env-file=$EnvFile" .\scripts\run-db-migrations.js @RunnerArguments
+    if ($LASTEXITCODE -ne 0) { throw "Migration runner exited with code $LASTEXITCODE." }
+  } finally {
+    foreach ($name in $names) {
+      [Environment]::SetEnvironmentVariable($name, $saved[$name], 'Process')
+    }
+  }
+}
+```
+
+The dry-run only prints the migration order; it does not connect or verify the configured target. The apply path performs the hostname and database-name checks.
+
+Run the Production dry-run first:
+
+```powershell
+Invoke-CybanextMigration -EnvFile .env.production -RunnerArguments @('--target=production')
+```
+
+The following command requires deliberate operator confirmation and is **NOT EXECUTED by this change**:
+
+```powershell
+Invoke-CybanextMigration -EnvFile .env.production -RunnerArguments @('--target=production', '--apply', '--confirm-production=I-UNDERSTAND-THIS-IS-PRODUCTION')
+```
+
+Production adoption is disabled; this path is for an empty application schema. The runner acquires a transaction-scoped advisory lock before reading migration history, validates the complete history as an exact ordered prefix of the known migrations, then applies missing migrations and records filenames, SHA-256 checksums, and timestamps in the same transaction. A history gap (for example, 002 without 001), unknown filename, or checksum mismatch stops execution. A failed transaction should roll back its DDL and history together; local tests use a mock and do not prove PostgreSQL rollback behavior. `IF NOT EXISTS` does not repair pre-existing schema drift.
+
+Neon SQL metadata does not identify a branch by itself. The runner's hostname comparison and live database-name check are safeguards against accidental target mismatch, not independent branch-identity verification. The operator must verify each hostname against its intended branch in Neon Console before configuring the allowlist. If either target hostname is missing/malformed, the allowlist values are identical, or the actual endpoint/database name does not match, the runner refuses to apply. Keep both hostnames current when an endpoint is recreated.
 
 If registrations already exist in `.data/digital-forensics-registrations.json`, keep that file unchanged and back it up before import. After applying the schema and setting `DATABASE_URL` to the intended database, first validate the source without writes:
 
