@@ -621,6 +621,20 @@ a {
   border-color: #D20334;
 }
 
+.sms-consent-field label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-weight: 400;
+}
+
+.sms-consent-field input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: auto;
+  margin: 3px 0 0;
+  padding: 0;
+}
+
 /* Native input remains part of the form; this supplies its accessible drop-zone UI. */
 .cv-upload-group { gap: 8px; }
 
@@ -2329,57 +2343,44 @@ a {
 
 }
 
-/* Week 4 Digital Forensics application banner */
+/* Digital Forensics course banner */
 .hero-banner {
   position: relative;
   isolation: isolate;
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.92fr);
   align-items: center;
-  gap: clamp(32px, 7vw, 96px);
+  gap: clamp(32px, 5vw, 72px);
   overflow: hidden;
-  padding: clamp(64px, 9vw, 112px) max(24px, calc((100vw - 1160px) / 2));
+  padding: clamp(52px, 7vw, 88px) max(24px, calc((100vw - 1280px) / 2));
   color: #FFFFFF;
   background:
-    radial-gradient(ellipse at 78% 45%, rgba(210, 3, 52, 0.16), transparent 42%),
-    radial-gradient(ellipse at 12% 100%, rgba(210, 3, 52, 0.08), transparent 38%),
-    linear-gradient(120deg, #10151F 0%, #171D2A 100%);
-}
-
-.hero-banner::before {
-  position: absolute;
-  z-index: -1;
-  inset: 0;
-  background-image: linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
-  background-size: 42px 42px;
-  content: '';
-  mask-image: linear-gradient(90deg, transparent, #000 72%);
+    radial-gradient(ellipse at 82% 50%, rgba(210, 3, 52, 0.13), transparent 42%),
+    linear-gradient(115deg, #101114 0%, #171719 100%);
 }
 
 .hero-banner-content {
   position: relative;
-  max-width: 680px;
+  z-index: 1;
+  max-width: 660px;
 }
 
 .hero-banner-badge {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 24px;
+  margin-bottom: 22px;
   padding: 9px 13px;
-  border: 1px solid rgba(255, 255, 255, 0.17);
+  border: 1px solid rgba(210, 3, 52, 0.72);
   border-radius: 999px;
-  color: #F3EEE3;
-  background: rgba(210, 3, 52, 0.1);
-  box-shadow: inset 0 0 0 1px rgba(210, 3, 52, 0.08);
+  color: #FFFFFF;
+  background: rgba(210, 3, 52, 0.08);
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.02em;
 }
 
-.hero-banner-badge-dot,
-.hero-screening-indicator {
+.hero-banner-badge-dot {
   width: 8px;
   height: 8px;
   flex: 0 0 auto;
@@ -2389,28 +2390,97 @@ a {
 }
 
 .hero-banner h1 {
-  max-width: 680px;
-  margin-bottom: 20px;
+  max-width: 700px;
+  margin-bottom: 18px;
   color: #FFFFFF;
-  font-size: clamp(38px, 5.2vw, 64px);
+  font-size: clamp(38px, 5vw, 64px);
   font-weight: 700;
   letter-spacing: -0.045em;
-  line-height: 1.08;
+  line-height: 1.06;
+}
+
+.hero-banner h1 span {
+  display: block;
+  color: #D20334;
 }
 
 .hero-banner-content > p {
-  max-width: 620px;
-  margin-bottom: 30px;
-  color: #F3EEE3;
-  font-size: clamp(15px, 1.5vw, 18px);
-  line-height: 1.75;
+  max-width: 630px;
+  margin-bottom: 22px;
+  color: #C6C7CC;
+  font-size: clamp(14px, 1.25vw, 16px);
+  line-height: 1.7;
+}
+
+.hero-banner-details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0 0 20px;
+  padding: 0;
+  list-style: none;
+}
+
+.hero-banner-details li {
+  display: inline-flex;
+  min-height: 42px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 11px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+  color: #F5F5F6;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.hero-banner-details i {
+  color: #E54161;
+  font-size: 17px;
+}
+
+.hero-banner-pricing {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  margin-bottom: 24px;
+}
+
+.hero-banner-price {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+}
+
+.hero-banner-price + .hero-banner-price {
+  padding-left: 24px;
+  border-left: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.hero-banner-price strong {
+  color: #FFFFFF;
+  font-size: clamp(22px, 2.4vw, 30px);
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  white-space: nowrap;
+}
+
+.hero-banner-price span {
+  color: #C6C7CC;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .hero-banner .btn-primary {
+  display: inline-flex;
   min-height: 52px;
+  align-items: center;
+  justify-content: center;
   padding: 0 24px;
   border: 1px solid #D20334;
-  border-radius: 6px;
+  border-radius: 8px;
   color: #FFFFFF;
   background: #D20334;
   box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.35);
@@ -2437,143 +2507,98 @@ a {
 }
 
 .hero-banner-visual {
-  display: grid;
-  justify-items: center;
-  gap: 16px;
+  position: relative;
   width: 100%;
-}
-
-.hero-screening-card {
-  width: min(100%, 390px);
-  padding: 24px;
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 12px;
-  background: rgba(12, 16, 25, 0.84);
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.32);
-  transform: rotate(1.5deg);
+  background: #101114;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.38);
 }
 
-.hero-screening-heading {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  color: #D8DDE6;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-}
-
-.hero-screening-live {
-  margin-left: auto;
-  padding: 4px 7px;
-  border-radius: 4px;
-  color: #FFFFFF;
-  background: rgba(210, 3, 52, 0.32);
-  font-size: 9px;
-  letter-spacing: 0.08em;
-}
-
-.hero-screening-lines {
-  display: grid;
-  gap: 10px;
-  margin: 26px 0;
-}
-
-.hero-screening-lines span {
-  height: 7px;
-  border-radius: 5px;
-  background: linear-gradient(90deg, rgba(196, 205, 220, 0.28), rgba(196, 205, 220, 0.06));
-}
-
-.hero-screening-lines span:nth-child(1) {
-  width: 88%;
-}
-
-.hero-screening-lines span:nth-child(2) {
-  width: 70%;
-}
-
-.hero-screening-lines span:nth-child(3) {
-  width: 80%;
-}
-
-.hero-screening-result {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding-top: 18px;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.hero-screening-check {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  flex: 0 0 auto;
-  place-items: center;
-  border-radius: 50%;
-  color: #FFFFFF;
-  background: #D20334;
-}
-
-.hero-screening-result strong,
-.hero-screening-result small {
+.hero-banner-image {
   display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1.18 / 1;
+  object-fit: cover;
+  object-position: center;
 }
 
-.hero-screening-result strong {
-  margin-bottom: 3px;
-  color: #FFFFFF;
-  font-size: 13px;
-}
-
-.hero-screening-result small {
-  color: #F3EEE3;
-  font-size: 11px;
-}
-
-.hero-visual-mark {
-  color: #F3EEE3;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.16em;
-}
-
-@media (max-width: 768px) {
+@media (max-width: 900px) {
   .hero-banner {
     grid-template-columns: 1fr;
-    gap: 44px;
-    padding: 64px 24px;
+    gap: 36px;
+    padding: 56px max(24px, calc((100vw - 700px) / 2));
   }
 
   .hero-banner-content {
-    margin: 0 auto;
-    text-align: center;
+    max-width: 700px;
   }
 
   .hero-banner-content > p {
-    margin-right: auto;
-    margin-left: auto;
+    max-width: 660px;
+  }
+
+  .hero-banner-visual {
+    max-width: 700px;
   }
 }
 
 @media (max-width: 480px) {
   .hero-banner {
-    gap: 36px;
-    padding: 52px 20px;
+    gap: 22px;
+    padding: 34px 20px;
   }
 
   .hero-banner-badge {
     gap: 8px;
+    margin-bottom: 18px;
     padding: 8px 10px;
     font-size: 10px;
   }
 
   .hero-banner h1 {
-    font-size: clamp(34px, 10vw, 44px);
+    margin-bottom: 14px;
+    font-size: clamp(34px, 9.2vw, 42px);
   }
 
-  .hero-screening-card {
-    padding: 20px;
+  .hero-banner-content > p {
+    margin-bottom: 16px;
+    line-height: 1.6;
+  }
+
+  .hero-banner-details {
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  .hero-banner-details li {
+    min-height: 38px;
+    padding: 7px 10px;
+    font-size: 11px;
+  }
+
+  .hero-banner-pricing {
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 16px;
+  }
+
+  .hero-banner-price + .hero-banner-price {
+    padding-left: 0;
+    border-left: 0;
+  }
+
+  .hero-banner-price strong {
+    font-size: 24px;
+  }
+
+  .hero-banner .btn-primary {
+    width: 100%;
+  }
+
+  .hero-banner-image {
+    aspect-ratio: 1.35 / 1;
   }
 }

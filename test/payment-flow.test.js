@@ -25,6 +25,10 @@ const digitalForensicsDatabase =
   require('../lib/digital-forensics-database');
 const digitalForensicsStore =
   require('../lib/digital-forensics-store');
+const regularTrackDatabase = require('../lib/digital-forensics-database');
+const regularTrackStore = require('../lib/regular-track-payment-store');
+const createRegularTrackRegistration =
+  require('../api/create-regular-track-registration');
 
 function createApplicantToken(track = 'incident_response') {
   return createQualificationToken({
@@ -53,10 +57,13 @@ function createResponse() {
 function withFakeDigitalForensicsDatabase(t) {
   const originalQuery = digitalForensicsDatabase.query;
   const registrations = new Map();
+  const consentEvents = [];
+  const statements = [];
   const fake = {
     failure: null,
     async query(strings, ...values) {
       const statement = strings.join(' ');
+      statements.push(statement);
       if (
         this.failure &&
         (!this.failure.statementIncludes ||
@@ -64,6 +71,8 @@ function withFakeDigitalForensicsDatabase(t) {
       ) {
         throw this.failure.error || this.failure;
       }
+
+      if (statement.includes('FROM email_notification_outbox')) return [];
 
       if (statement.includes('INSERT INTO digital_forensics_registrations')) {
         const [
@@ -93,10 +102,41 @@ function withFakeDigitalForensicsDatabase(t) {
           updatedAt: timestamp
         };
         registrations.set(id, row);
+        if (values.at(-1) === true) {
+          consentEvents.push({
+            registrationId: id,
+            eventType: 'grant',
+            phoneSnapshot: phone,
+            purpose: values[5],
+            policyVersion: values[6],
+            source: values[7],
+            occurredAt: timestamp
+          });
+        }
         return [{ ...row }];
       }
 
       if (statement.includes('UPDATE digital_forensics_registrations')) {
+        if (statement.includes('WITH updated AS')) {
+          const [status, , transactionId, , verificationTimestamp, id, reference] = values;
+          const row = registrations.get(id);
+          if (!row || row.status !== 'payment_initiated' ||
+              row.paymentReference !== reference) return [];
+          Object.assign(row, {
+            status,
+            verifiedTransactionId: status === 'payment_verified'
+              ? String(transactionId)
+              : null,
+            paymentVerificationTimestamp: status === 'payment_verified'
+              ? verificationTimestamp
+              : null,
+            updatedAt: new Date().toISOString()
+          });
+          return [{
+            ...row,
+            notificationEventKey: `digital-forensics-payment-success:${id}:${reference}`
+          }];
+        }
         const [serializedPatch, id, noStatusCondition, expectedStatus,
           noReferenceCondition, expectedPaymentReference] = values;
         const row = registrations.get(id);
@@ -142,7 +182,187 @@ function withFakeDigitalForensicsDatabase(t) {
     digitalForensicsDatabase.query = originalQuery;
   });
 
-  return { fake, registrations };
+  return { fake, registrations, consentEvents, statements };
+}
+
+function withFakeRegularTrackDatabase(t) {
+  const originalQuery = regularTrackDatabase.query;
+  const applicants = new Map();
+  const consentEvents = [];
+  const attempts = new Map();
+  const statements = [];
+  const fake = {
+    failure: null,
+    async query(strings, ...values) {
+      const statement = strings.join(' ');
+      statements.push(statement);
+      const normalizedStatement = statement.replace(/\s+/g, ' ').trim();
+      if (
+        this.failure &&
+        (!this.failure.statementIncludes ||
+          statement.includes(this.failure.statementIncludes))
+      ) {
+        throw this.failure.error || this.failure;
+      }
+
+      if (statement.includes('FROM email_notification_outbox')) return [];
+
+      if (statement.includes('INSERT INTO regular_track_applicants')) {
+        const [id, fullName, email, phone, track] = values;
+        const applicant = {
+          id,
+          fullName,
+          email,
+          phone,
+          track,
+          status: 'pending'
+        };
+        applicants.set(id, applicant);
+        if (values.at(-1) === true) {
+          consentEvents.push({
+            registrationId: id,
+            eventType: 'grant',
+            phoneSnapshot: phone,
+            purpose: values[5],
+            policyVersion: values[6],
+            source: 'main_application',
+            occurredAt: new Date().toISOString()
+          });
+        }
+        return [{ ...applicant }];
+      }
+
+      if (statement.includes('INSERT INTO regular_track_payment_attempts')) {
+        const [registrationId, reference, referenceAmount, expectedAmount,
+          expectedCurrency] = values;
+        const applicant = applicants.get(registrationId);
+        const hasActiveAttempt = [...attempts.values()].some((attempt) =>
+          attempt.registrationId === registrationId &&
+          ['initializing', 'payment_initiated'].includes(attempt.status)
+        );
+        if (!applicant || applicant.status !== 'pending' || hasActiveAttempt) {
+          return [];
+        }
+
+        const attempt = {
+          reference,
+          registrationId,
+          referenceAmount,
+          referenceCurrency: 'USD',
+          expectedAmount,
+          expectedCurrency,
+          status: 'initializing',
+          verifiedTransactionId: null,
+          paymentVerificationTimestamp: null
+        };
+        attempts.set(reference, attempt);
+        applicant.status = 'payment_initiated';
+        return [{ ...attempt }];
+      }
+
+      if (statement.includes('FROM regular_track_payment_attempts AS payment')) {
+        const attempt = attempts.get(values[0]);
+        const applicant = attempt && applicants.get(attempt.registrationId);
+        return attempt && applicant
+          ? [{ ...attempt, email: applicant.email, track: applicant.track, applicantStatus: applicant.status }]
+          : [];
+      }
+
+      if (
+        statement.includes('UPDATE regular_track_payment_attempts') &&
+        values.includes('initialization_failed')
+      ) {
+        const reference = values.find((value) => attempts.has(value));
+        const attempt = attempts.get(reference);
+        if (!attempt || attempt.status !== 'initializing') {
+          return [];
+        }
+        attempt.status = 'initialization_failed';
+        const applicant = applicants.get(attempt.registrationId);
+        if (
+          applicant.status !== 'payment_verified' &&
+          ![...attempts.values()].some((candidate) =>
+            candidate.registrationId === applicant.id &&
+            ['initializing', 'payment_initiated'].includes(candidate.status)
+          )
+        ) {
+          applicant.status = 'pending';
+        }
+        return [{ registrationId: attempt.registrationId }];
+      }
+
+      if (
+        normalizedStatement.startsWith(
+          'UPDATE regular_track_payment_attempts SET status = , updated_at = CURRENT_TIMESTAMP'
+        )
+      ) {
+        const [status, reference] = values;
+        const attempt = attempts.get(reference);
+        if (!attempt || attempt.status !== 'initializing') {
+          return [];
+        }
+        attempt.status = status;
+        return [{ reference, registrationId: attempt.registrationId }];
+      }
+
+      if (statement.includes("SET status = 'failed'")) {
+        const [reference] = values;
+        const attempt = attempts.get(reference);
+        if (
+          !attempt ||
+          !['initializing', 'payment_initiated'].includes(attempt.status)
+        ) {
+          return [];
+        }
+        attempt.status = 'failed';
+        const applicant = applicants.get(attempt.registrationId);
+        applicant.status = [...attempts.values()].some((candidate) =>
+          candidate.registrationId === applicant.id &&
+          ['initializing', 'payment_initiated'].includes(candidate.status)
+        )
+          ? 'payment_initiated'
+          : 'pending';
+        return [{ registrationId: attempt.registrationId }];
+      }
+
+      if (
+        statement.includes('WITH applicant AS MATERIALIZED') &&
+        statement.includes('UPDATE regular_track_payment_attempts')
+      ) {
+        const [lookupReference, transactionId, reference] = values;
+        const attempt = attempts.get(reference);
+        const applicant = attempt && applicants.get(attempt.registrationId);
+        if (
+          lookupReference !== reference ||
+          !attempt ||
+          !applicant ||
+          applicant.status === 'payment_verified' ||
+          !['initializing', 'payment_initiated'].includes(attempt.status)
+        ) {
+          return [];
+        }
+        attempt.status = 'payment_verified';
+        attempt.verifiedTransactionId = transactionId;
+        attempt.paymentVerificationTimestamp = new Date().toISOString();
+        applicant.status = 'payment_verified';
+        return [{ reference, registrationId: attempt.registrationId }];
+      }
+
+      if (statement.includes('FROM regular_track_applicants')) {
+        const applicant = applicants.get(values[0]);
+        return applicant ? [{ ...applicant }] : [];
+      }
+
+      throw new Error('Unexpected regular-track database statement in test mock.');
+    }
+  };
+
+  regularTrackDatabase.query = fake.query.bind(fake);
+  t.after(() => {
+    regularTrackDatabase.query = originalQuery;
+  });
+
+  return { fake, applicants, consentEvents, attempts, statements };
 }
 
 async function createAwaitingDigitalForensicsRegistration(email, reference) {
@@ -163,12 +383,39 @@ async function createAwaitingDigitalForensicsRegistration(email, reference) {
   return updated;
 }
 
+async function createAwaitingRegularTrackPayment(email, reference) {
+  const applicant = await regularTrackStore.createApplicant({
+    fullName: 'Test Applicant',
+    email,
+    phone: '+233201234567',
+    track: 'incident_response'
+  });
+  await regularTrackStore.createPaymentAttempt({
+    reference,
+    registrationId: applicant.id,
+    referenceAmount: 30,
+    expectedAmount: 34650,
+    expectedCurrency: 'GHS'
+  });
+  await regularTrackStore.updatePaymentAttemptStatus(
+    reference,
+    'payment_initiated'
+  );
+  return {
+    applicant,
+    token: createApplicantToken(),
+    reference
+  };
+}
+
 function stubPaystackRequest(t, responseData) {
   const originalRequest = https.request;
   let requestOptions;
   let requestBody = '';
+  let requestCount = 0;
 
   https.request = (options, callback) => {
+    requestCount += 1;
     requestOptions = options;
     const request = new EventEmitter();
     request.write = (chunk) => {
@@ -177,11 +424,15 @@ function stubPaystackRequest(t, responseData) {
     request.setTimeout = () => {};
     request.destroy = (error) => request.emit('error', error);
     request.end = () => {
+      const requestData = requestBody ? JSON.parse(requestBody) : null;
+      const reply = typeof responseData === 'function'
+        ? responseData(requestOptions, requestData)
+        : responseData;
       const response = new EventEmitter();
       response.statusCode = 200;
       callback(response);
       process.nextTick(() => {
-        response.emit('data', Buffer.from(JSON.stringify(responseData)));
+        response.emit('data', Buffer.from(JSON.stringify(reply)));
         response.emit('end');
       });
     };
@@ -198,12 +449,15 @@ function stubPaystackRequest(t, responseData) {
     },
     get body() {
       return requestBody ? JSON.parse(requestBody) : null;
+    },
+    get requestCount() {
+      return requestCount;
     }
   };
 }
 
 test('Digital Forensics registration records can be created, found, and updated', async (t) => {
-  withFakeDigitalForensicsDatabase(t);
+  const { consentEvents } = withFakeDigitalForensicsDatabase(t);
   const registration = await digitalForensicsStore.createRegistration({
     fullName: 'Database Applicant',
     email: 'APPLICANT@example.com',
@@ -215,6 +469,7 @@ test('Digital Forensics registration records can be created, found, and updated'
   assert.equal(registration.status, 'pending');
   assert.equal(registration.course, 'digital_forensics');
   assert.equal(registration.expectedAmount, 1200);
+  assert.equal(consentEvents.length, 0);
   assert.deepEqual(
     await digitalForensicsStore.findRegistration(registration.id),
     registration
@@ -232,6 +487,58 @@ test('Digital Forensics registration records can be created, found, and updated'
   assert.equal(updated.status, 'payment_initiated');
   assert.equal(updated.paymentReference, 'DF-123456-ABCDEF');
   assert.equal(await digitalForensicsStore.findRegistration('DF-MISSING'), null);
+});
+
+test('Digital Forensics opt-in persists immutable grant evidence with normalized phone', async (t) => {
+  const { consentEvents } = withFakeDigitalForensicsDatabase(t);
+  const registration = await digitalForensicsStore.createRegistration({
+    fullName: 'Consent Applicant',
+    email: 'consent@example.com',
+    phone: '0241234567',
+    smsConsent: true,
+    consentSource: 'main_application'
+  });
+
+  assert.equal(registration.phone, '+233241234567');
+  assert.equal(consentEvents.length, 1);
+  assert.deepEqual(consentEvents[0], {
+    registrationId: registration.id,
+    eventType: 'grant',
+    phoneSnapshot: '+233241234567',
+    purpose: 'SMS notifications confirming successful payment for a Cybanext programme.',
+    policyVersion: 'sms-payment-success-v1',
+    source: 'main_application',
+    occurredAt: consentEvents[0].occurredAt
+  });
+  assert.ok(Number.isFinite(Date.parse(consentEvents[0].occurredAt)));
+});
+
+test('Digital Forensics consent cannot be recorded without valid phone and DB failure is atomic', async (t) => {
+  const { fake, registrations, consentEvents } =
+    withFakeDigitalForensicsDatabase(t);
+  await assert.rejects(
+    digitalForensicsStore.createRegistration({
+      fullName: 'Consent Applicant',
+      email: 'consent@example.com',
+      phone: '',
+      smsConsent: true
+    }),
+    /valid Ghanaian phone number/
+  );
+  fake.failure = Object.assign(new Error('database unavailable'), {
+    code: 'ECONNREFUSED'
+  });
+  await assert.rejects(
+    digitalForensicsStore.createRegistration({
+      fullName: 'Consent Applicant',
+      email: 'consent@example.com',
+      phone: '+233241234567',
+      smsConsent: true
+    }),
+    { code: 'ECONNREFUSED' }
+  );
+  assert.equal(registrations.size, 0);
+  assert.equal(consentEvents.length, 0);
 });
 
 test('Digital Forensics database failures are propagated instead of appearing empty', async (t) => {
@@ -381,15 +688,117 @@ test('qualification tokens can use the configured Paystack TEST key as a fallbac
   }
 });
 
+test('regular-track registration requires qualification and persists applicant details', async (t) => {
+  const { consentEvents } = withFakeRegularTrackDatabase(t);
+  const response = createResponse();
+
+  await createRegularTrackRegistration({
+    method: 'POST',
+    body: {
+      fullName: 'Test Applicant',
+      email: 'applicant@example.com',
+      phone: '+233201234567',
+      qualificationToken: createApplicantToken()
+    }
+  }, response);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.track, 'incident_response');
+  assert.equal(response.body.status, 'pending');
+  const savedApplicant =
+    await regularTrackStore.findApplicant(response.body.registrationId);
+  assert.equal(savedApplicant.fullName, 'Test Applicant');
+  assert.equal(savedApplicant.email, 'applicant@example.com');
+  assert.equal(savedApplicant.phone, '+233201234567');
+  assert.equal(consentEvents.length, 0);
+});
+
+test('regular-track registration captures explicit consent and rejects consent without phone', async () => {
+  const saved = [];
+  const handler = createRegularTrackRegistration.createHandler({
+    async createApplicant(applicant) {
+      saved.push(applicant);
+      return {
+        id: 'RT-CONSENT-123',
+        track: applicant.track,
+        status: 'pending'
+      };
+    }
+  });
+  const token = createQualificationToken({
+    name: 'Test Applicant',
+    email: 'applicant@example.com',
+    phone: '0241234567',
+    track: 'incident_response'
+  });
+  const response = createResponse();
+  await handler({
+    method: 'POST',
+    body: {
+      fullName: 'Test Applicant',
+      email: 'applicant@example.com',
+      phone: '0241234567',
+      smsConsent: true,
+      qualificationToken: token
+    }
+  }, response);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(saved[0].phone, '+233241234567');
+  assert.equal(saved[0].smsConsent, true);
+
+  const invalidResponse = createResponse();
+  await handler({
+    method: 'POST',
+    body: {
+      fullName: 'Test Applicant',
+      email: 'applicant@example.com',
+      phone: '',
+      smsConsent: true,
+      qualificationToken: createApplicantToken()
+    }
+  }, invalidResponse);
+  assert.equal(invalidResponse.statusCode, 400);
+  assert.match(invalidResponse.body.error, /valid Ghanaian phone number/i);
+  assert.equal(saved.length, 1);
+});
+
+test('regular-track store inserts consent event with the registration statement', async (t) => {
+  const { consentEvents, statements } = withFakeRegularTrackDatabase(t);
+  const applicant = await regularTrackStore.createApplicant({
+    fullName: 'Consent Applicant',
+    email: 'consent@example.com',
+    phone: '0241234567',
+    track: 'incident_response',
+    smsConsent: true
+  });
+
+  assert.equal(applicant.phone, '+233241234567');
+  assert.equal(consentEvents.length, 1);
+  assert.equal(consentEvents[0].phoneSnapshot, '+233241234567');
+  assert.equal(consentEvents[0].purpose,
+    'SMS notifications confirming successful payment for a Cybanext programme.');
+  assert.equal(consentEvents[0].source, 'main_application');
+  assert.ok(statements.some((statement) =>
+    statement.includes('INSERT INTO sms_consent_events')));
+});
+
 test('regular payment initialization ignores client price and currency', async (t) => {
-  const paystack = stubPaystackRequest(t, {
+  withFakeRegularTrackDatabase(t);
+  const applicant = await regularTrackStore.createApplicant({
+    fullName: 'Test Applicant',
+    email: 'applicant@example.com',
+    phone: '+233201234567',
+    track: 'incident_response'
+  });
+  const paystack = stubPaystackRequest(t, (_options, body) => ({
     status: true,
     data: {
       authorization_url: 'https://checkout.paystack.test/authorize',
       access_code: 'access-code',
-      reference: 'CYB-123456-ABCDEF'
+      reference: body.reference
     }
-  });
+  }));
   const response = createResponse();
 
   await initializePayment({
@@ -397,6 +806,7 @@ test('regular payment initialization ignores client price and currency', async (
     body: {
       email: 'applicant@example.com',
       track: 'incident_response',
+      registrationId: applicant.id,
       qualificationToken: createApplicantToken(),
       amount: 1,
       currency: 'USD',
@@ -409,7 +819,130 @@ test('regular payment initialization ignores client price and currency', async (
   assert.equal(paystack.body.currency, 'GHS');
   assert.deepEqual(paystack.body.channels, ['card', 'mobile_money']);
   assert.equal(paystack.body.metadata.track, 'incident_response');
+  assert.equal(paystack.body.metadata.registration_id, applicant.id);
+  assert.equal(
+    (await regularTrackStore.findPaymentAttempt(paystack.body.reference)).status,
+    'payment_initiated'
+  );
+  assert.equal(
+    (await regularTrackStore.findApplicant(applicant.id)).status,
+    'payment_initiated'
+  );
   assert.equal(Object.hasOwn(response.body, 'amount'), false);
+});
+
+test('regular payment metadata uses normalized Ghana phone numbers', async (t) => {
+  withFakeRegularTrackDatabase(t);
+  const applicant = await regularTrackStore.createApplicant({
+    fullName: 'Test Applicant',
+    email: 'applicant@example.com',
+    phone: '0241234567',
+    track: 'incident_response'
+  });
+  const paystack = stubPaystackRequest(t, (_options, body) => ({
+    status: true,
+    data: {
+      authorization_url: 'https://checkout.paystack.test/authorize',
+      reference: body.reference
+    }
+  }));
+  const response = createResponse();
+  const qualificationToken = createQualificationToken({
+    name: 'Test Applicant',
+    email: 'applicant@example.com',
+    phone: '0241234567',
+    track: 'incident_response'
+  });
+
+  await initializePayment({
+    method: 'POST',
+    body: {
+      registrationId: applicant.id,
+      qualificationToken
+    }
+  }, response);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(paystack.body.metadata.applicant_phone, '+233241234567');
+});
+
+test('failed initialization releases the applicant for a new payment attempt', async (t) => {
+  withFakeRegularTrackDatabase(t);
+  const applicant = await regularTrackStore.createApplicant({
+    fullName: 'Test Applicant',
+    email: 'applicant@example.com',
+    phone: '+233201234567',
+    track: 'incident_response'
+  });
+  const firstAttempt = await regularTrackStore.createPaymentAttempt({
+    reference: 'CYB-INITIALIZING-123456',
+    registrationId: applicant.id,
+    referenceAmount: 30,
+    expectedAmount: 34650,
+    expectedCurrency: 'GHS'
+  });
+  assert.ok(firstAttempt);
+
+  await regularTrackStore.updatePaymentAttemptStatus(
+    firstAttempt.reference,
+    'initialization_failed'
+  );
+
+  assert.equal(
+    (await regularTrackStore.findPaymentAttempt(firstAttempt.reference)).status,
+    'initialization_failed'
+  );
+  assert.equal(
+    (await regularTrackStore.findApplicant(applicant.id)).status,
+    'pending'
+  );
+  const retry = await regularTrackStore.createPaymentAttempt({
+    reference: 'CYB-RETRY-123456',
+    registrationId: applicant.id,
+    referenceAmount: 30,
+    expectedAmount: 34650,
+    expectedCurrency: 'GHS'
+  });
+  assert.ok(retry);
+});
+
+test('concurrent regular payment initialization creates only one active attempt', async (t) => {
+  const { applicants, attempts } = withFakeRegularTrackDatabase(t);
+  const applicant = await regularTrackStore.createApplicant({
+    fullName: 'Test Applicant',
+    email: 'applicant@example.com',
+    phone: '+233201234567',
+    track: 'incident_response'
+  });
+  const paystack = stubPaystackRequest(t, (_options, body) => ({
+    status: true,
+    data: {
+      authorization_url: 'https://checkout.paystack.test/authorize',
+      access_code: 'access-code',
+      reference: body.reference
+    }
+  }));
+  const request = {
+    method: 'POST',
+    body: {
+      email: applicant.email,
+      track: applicant.track,
+      registrationId: applicant.id,
+      qualificationToken: createApplicantToken()
+    }
+  };
+  const responses = [createResponse(), createResponse()];
+
+  await Promise.all(responses.map((response) =>
+    initializePayment(request, response)));
+
+  assert.deepEqual(
+    responses.map((response) => response.statusCode).sort(),
+    [200, 409]
+  );
+  assert.equal(paystack.requestCount, 1);
+  assert.equal(attempts.size, 1);
+  assert.equal(applicants.get(applicant.id).status, 'payment_initiated');
 });
 
 test('payment initialization rejects absent or mismatched qualification', async () => {
@@ -564,7 +1097,7 @@ test('Digital Forensics local option initializes exactly GH₵1,200 in GHS pesew
   const registration = await createRegistration({
     fullName: 'Local Applicant',
     email: 'local@example.com',
-    phone: '+233201234568'
+    phone: '0241234568'
   });
 
   await initializeDigitalForensicsPayment({
@@ -580,6 +1113,7 @@ test('Digital Forensics local option initializes exactly GH₵1,200 in GHS pesew
   assert.equal(paystack.body.amount, 120000);
   assert.equal(paystack.body.currency, 'GHS');
   assert.equal(paystack.body.metadata.charge_amount_ghs, 1200);
+  assert.equal(paystack.body.metadata.applicant_phone, '+233241234568');
 });
 
 test('regular endpoint cannot skip the Digital Forensics payment page', async () => {
@@ -596,7 +1130,7 @@ test('regular endpoint cannot skip the Digital Forensics payment page', async ()
 });
 
 test('Digital Forensics verification associates and conditionally marks the persisted registration paid', async (t) => {
-  withFakeDigitalForensicsDatabase(t);
+  const { statements } = withFakeDigitalForensicsDatabase(t);
   const reference = 'DF-345678-ABCDEF';
   const registration = await createAwaitingDigitalForensicsRegistration(
     'course@example.com',
@@ -626,8 +1160,89 @@ test('Digital Forensics verification associates and conditionally marks the pers
     await digitalForensicsStore.findRegistration(registration.id);
   assert.equal(savedRegistration.status, 'payment_verified');
   assert.equal(savedRegistration.paymentReference, reference);
-  assert.equal(savedRegistration.verifiedTransactionId, transaction.id);
+  assert.equal(savedRegistration.verifiedTransactionId, String(transaction.id));
   assert.ok(savedRegistration.paymentVerificationTimestamp);
+  assert.ok(statements.some((statement) =>
+    statement.includes('INSERT INTO email_notification_outbox') &&
+    statement.includes('WITH updated AS')
+  ));
+});
+
+test('Digital Forensics repeat verification normalizes PostgreSQL text transaction IDs', async (t) => {
+  const { statements } = withFakeDigitalForensicsDatabase(t);
+  const reference = 'DF-345678-REPEATED';
+  const registration = await createAwaitingDigitalForensicsRegistration(
+    'course@example.com',
+    reference
+  );
+  const transaction = {
+    id: 998879,
+    status: 'success',
+    reference,
+    currency: 'GHS',
+    amount: 120000,
+    customer: { email: 'course@example.com' },
+    metadata: {
+      track: 'digital_forensics',
+      pricing_option: 'GHS',
+      registration_id: registration.id
+    }
+  };
+  stubPaystackRequest(t, { status: true, data: transaction });
+
+  const firstResponse = createResponse();
+  await verifyPayment({ method: 'POST', body: { reference } }, firstResponse);
+  const secondResponse = createResponse();
+  await verifyPayment({ method: 'POST', body: { reference } }, secondResponse);
+
+  assert.equal(firstResponse.statusCode, 200);
+  assert.equal(secondResponse.statusCode, 200);
+  assert.equal(secondResponse.body.verified, true);
+  assert.equal(
+    (await digitalForensicsStore.findRegistration(registration.id)).verifiedTransactionId,
+    String(transaction.id)
+  );
+  assert.equal(statements.filter((statement) =>
+    statement.includes('INSERT INTO email_notification_outbox') &&
+    statement.includes('WITH updated AS')
+  ).length, 1);
+});
+
+test('Digital Forensics only records and notifies an explicitly failed Paystack payment', async (t) => {
+  const { statements } = withFakeDigitalForensicsDatabase(t);
+  const reference = 'DF-345678-FAILURE';
+  const registration = await createAwaitingDigitalForensicsRegistration(
+    'course@example.com',
+    reference
+  );
+  stubPaystackRequest(t, {
+    status: true,
+    data: {
+      id: 998878,
+      status: 'failed',
+      reference,
+      currency: 'GHS',
+      amount: 120000,
+      customer: { email: 'course@example.com' },
+      metadata: {
+        track: 'digital_forensics',
+        pricing_option: 'GHS',
+        registration_id: registration.id
+      }
+    }
+  });
+  const response = createResponse();
+
+  await verifyPayment({ method: 'POST', body: { reference } }, response);
+
+  assert.equal(response.statusCode, 400);
+  assert.equal(
+    (await digitalForensicsStore.findRegistration(registration.id)).status,
+    'payment_failed'
+  );
+  assert.ok(statements.some((statement) =>
+    statement.includes('INSERT INTO email_notification_outbox')
+  ));
 });
 
 test('Digital Forensics verification does not report success when the database payment update fails', async (t) => {
@@ -782,17 +1397,23 @@ test('Digital Forensics verification rejects a Paystack reference not recorded f
 });
 
 test('verification only accepts a successful, matching server-priced payment', async (t) => {
+  const { statements } = withFakeRegularTrackDatabase(t);
   const reference = 'CYB-345678-ABCDEF';
-  const token = createApplicantToken();
+  const { applicant, token } = await createAwaitingRegularTrackPayment(
+    'applicant@example.com',
+    reference
+  );
   stubPaystackRequest(t, {
     status: true,
     data: {
+      id: 7654321,
       status: 'success',
       reference,
       currency: 'GHS',
       amount: 34650,
       customer: { email: 'applicant@example.com' },
       metadata: {
+        registration_id: applicant.id,
         track: 'incident_response',
         pricing_option: 'USD_REFERENCE',
         qualification_token: token
@@ -809,21 +1430,40 @@ test('verification only accepts a successful, matching server-priced payment', a
   assert.equal(response.statusCode, 200);
   assert.equal(response.body.verified, true);
   assert.equal(response.body.reference, reference);
+  assert.equal(response.body.registrationId, applicant.id);
+  const attempt = await regularTrackStore.findPaymentAttempt(reference);
+  assert.equal(attempt.status, 'payment_verified');
+  assert.equal(attempt.verifiedTransactionId, '7654321');
+  assert.ok(statements.some((statement) =>
+    statement.includes('INSERT INTO email_notification_outbox') &&
+    statement.includes('WITH applicant AS MATERIALIZED')
+  ));
+  assert.equal(
+    (await regularTrackStore.findApplicant(applicant.id)).status,
+    'payment_verified'
+  );
 });
 
 test('verification rejects a mismatched transaction amount', async (t) => {
+  withFakeRegularTrackDatabase(t);
+  const reference = 'CYB-456789-ABCDEF';
+  const { applicant, token } = await createAwaitingRegularTrackPayment(
+    'applicant@example.com',
+    reference
+  );
   stubPaystackRequest(t, {
     status: true,
     data: {
       status: 'success',
-      reference: 'CYB-456789-ABCDEF',
+      reference,
       currency: 'GHS',
       amount: 1,
       customer: { email: 'applicant@example.com' },
       metadata: {
+        registration_id: applicant.id,
         track: 'incident_response',
         pricing_option: 'USD_REFERENCE',
-        qualification_token: createApplicantToken()
+        qualification_token: token
       }
     }
   });
@@ -836,9 +1476,204 @@ test('verification rejects a mismatched transaction amount', async (t) => {
 
   await verifyPayment({
     method: 'POST',
-    body: { reference: 'CYB-456789-ABCDEF' }
+    body: { reference }
   }, response);
 
   assert.equal(response.statusCode, 400);
   assert.equal(response.body.verified, false);
+  assert.equal(
+    (await regularTrackStore.findPaymentAttempt(reference)).status,
+    'payment_initiated'
+  );
+});
+
+test('verification rejects an incorrect transaction currency', async (t) => {
+  withFakeRegularTrackDatabase(t);
+  const reference = 'CYB-456790-ABCDEF';
+  const { applicant, token } = await createAwaitingRegularTrackPayment(
+    'applicant@example.com',
+    reference
+  );
+  stubPaystackRequest(t, {
+    status: true,
+    data: {
+      id: 7654322,
+      status: 'success',
+      reference,
+      currency: 'USD',
+      amount: 34650,
+      customer: { email: 'applicant@example.com' },
+      metadata: {
+        registration_id: applicant.id,
+        track: 'incident_response',
+        pricing_option: 'USD_REFERENCE',
+        qualification_token: token
+      }
+    }
+  });
+  const response = createResponse();
+
+  await verifyPayment({ method: 'POST', body: { reference } }, response);
+
+  assert.equal(response.statusCode, 400);
+  assert.equal(response.body.verified, false);
+  assert.equal(
+    (await regularTrackStore.findPaymentAttempt(reference)).status,
+    'payment_initiated'
+  );
+});
+
+test('unsuccessful Paystack verification marks the known payment attempt failed', async (t) => {
+  const { statements } = withFakeRegularTrackDatabase(t);
+  const reference = 'CYB-456791-ABCDEF';
+  const { applicant, token } = await createAwaitingRegularTrackPayment(
+    'applicant@example.com',
+    reference
+  );
+  stubPaystackRequest(t, {
+    status: true,
+    data: {
+      id: 7654323,
+      status: 'failed',
+      reference,
+      currency: 'GHS',
+      amount: 34650,
+      customer: { email: 'applicant@example.com' },
+      metadata: {
+        registration_id: applicant.id,
+        track: 'incident_response',
+        pricing_option: 'USD_REFERENCE',
+        qualification_token: token
+      }
+    }
+  });
+  const response = createResponse();
+
+  await verifyPayment({ method: 'POST', body: { reference } }, response);
+
+  assert.equal(response.statusCode, 400);
+  assert.equal(response.body.verified, false);
+  assert.equal(
+    (await regularTrackStore.findPaymentAttempt(reference)).status,
+    'failed'
+  );
+  assert.equal(
+    (await regularTrackStore.findApplicant(applicant.id)).status,
+    'pending'
+  );
+  assert.ok(statements.some((statement) =>
+    statement.includes("'regular_track_payment_failure'") &&
+    statement.includes('INSERT INTO email_notification_outbox')
+  ));
+});
+
+test('unknown regular-track payment references are rejected after Paystack verification', async (t) => {
+  withFakeRegularTrackDatabase(t);
+  const reference = 'CYB-UNKNOWN-123456';
+  stubPaystackRequest(t, {
+    status: true,
+    data: {
+      id: 7654324,
+      status: 'success',
+      reference,
+      currency: 'GHS',
+      amount: 34650,
+      customer: { email: 'applicant@example.com' },
+      metadata: {
+        registration_id: 'RT-UNKNOWN',
+        track: 'incident_response',
+        pricing_option: 'USD_REFERENCE',
+        qualification_token: createApplicantToken()
+      }
+    }
+  });
+  const response = createResponse();
+
+  await verifyPayment({ method: 'POST', body: { reference } }, response);
+
+  assert.equal(response.statusCode, 404);
+  assert.equal(response.body.verified, false);
+});
+
+test('duplicate verification is idempotent and repeated callbacks update one record', async (t) => {
+  withFakeRegularTrackDatabase(t);
+  const reference = 'CYB-DUPLICATE-123456';
+  const { applicant, token } = await createAwaitingRegularTrackPayment(
+    'applicant@example.com',
+    reference
+  );
+  stubPaystackRequest(t, {
+    status: true,
+    data: {
+      id: 7654325,
+      status: 'success',
+      reference,
+      currency: 'GHS',
+      amount: 34650,
+      customer: { email: 'applicant@example.com' },
+      metadata: {
+        registration_id: applicant.id,
+        track: 'incident_response',
+        pricing_option: 'USD_REFERENCE',
+        qualification_token: token
+      }
+    }
+  });
+  const responses = [createResponse(), createResponse()];
+
+  await Promise.all(responses.map((response) =>
+    verifyPayment({ method: 'POST', body: { reference } }, response)));
+
+  assert.deepEqual(responses.map((response) => response.statusCode), [200, 200]);
+  assert.deepEqual(responses.map((response) => response.body.verified), [true, true]);
+  const attempt = await regularTrackStore.findPaymentAttempt(reference);
+  assert.equal(attempt.status, 'payment_verified');
+  assert.equal(attempt.verifiedTransactionId, '7654325');
+});
+
+test('database persistence failure never reports a regular-track payment as verified', async (t) => {
+  const { fake } = withFakeRegularTrackDatabase(t);
+  const reference = 'CYB-DB-FAIL-123456';
+  const { applicant, token } = await createAwaitingRegularTrackPayment(
+    'applicant@example.com',
+    reference
+  );
+  fake.failure = Object.assign(new Error('database unavailable'), {
+    statementIncludes: "status = 'payment_verified'",
+    error: Object.assign(new Error('database unavailable'), {
+      code: 'ECONNREFUSED'
+    })
+  });
+  stubPaystackRequest(t, {
+    status: true,
+    data: {
+      id: 7654326,
+      status: 'success',
+      reference,
+      currency: 'GHS',
+      amount: 34650,
+      customer: { email: 'applicant@example.com' },
+      metadata: {
+        registration_id: applicant.id,
+        track: 'incident_response',
+        pricing_option: 'USD_REFERENCE',
+        qualification_token: token
+      }
+    }
+  });
+  const response = createResponse();
+
+  await verifyPayment({ method: 'POST', body: { reference } }, response);
+
+  assert.equal(response.statusCode, 502);
+  assert.equal(response.body.verified, false);
+  fake.failure = null;
+  assert.equal(
+    (await regularTrackStore.findPaymentAttempt(reference)).status,
+    'payment_initiated'
+  );
+  assert.equal(
+    (await regularTrackStore.findApplicant(applicant.id)).status,
+    'payment_initiated'
+  );
 });

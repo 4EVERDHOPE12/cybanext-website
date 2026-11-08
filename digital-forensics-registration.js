@@ -19,7 +19,9 @@
       body: JSON.stringify({
         fullName: applicant.fullName,
         email: applicant.email,
-        phone: applicant.phone
+        phone: applicant.phone,
+        smsConsent: applicant.smsConsent === true,
+        consentSource: applicant.consentSource || 'digital_forensics_standalone'
       })
     });
 
@@ -49,6 +51,7 @@
       'digitalForensicsRegistrationId',
       registration.registrationId
     );
+    storage.setItem('selectedTrack', 'digital_forensics');
     storage.setItem(
       'digitalForensicsApplicantName',
       registration.fullName

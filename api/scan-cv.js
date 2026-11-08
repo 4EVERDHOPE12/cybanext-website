@@ -5,6 +5,7 @@ const mammoth = require('mammoth');
 const { scanText } = require('./keywords');
 const { getPaymentPrice } = require('../lib/payment-prices');
 const { createQualificationToken } = require('../lib/qualification-token');
+const { normalizeGhanaPhone } = require('../lib/ghana-phone');
 
 function getFieldValue(field) {
   return Array.isArray(field) ? field[0] : field;
@@ -43,14 +44,22 @@ module.exports = async function handler(req, res) {
 
     const name = String(getFieldValue(fields.fullName) || '').trim();
     const email = String(getFieldValue(fields.email) || '').trim();
-    const phone = String(getFieldValue(fields.phone) || '').trim();
+    let phone;
+    try {
+      phone = normalizeGhanaPhone(
+        String(getFieldValue(fields.phone) || '')
+      );
+    } catch (error) {
+      return res.status(400).json({
+        error: error.message
+      });
+    }
     const track = String(getFieldValue(fields.track) || '').trim();
 
     if (
       !name ||
       name.length > 120 ||
       email.length > 254 ||
-      phone.length > 30 ||
       !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
       !getPaymentPrice(track, track === 'digital_forensics' ? 'GHS' : 'USD_REFERENCE')
     ) {
@@ -117,7 +126,8 @@ module.exports = async function handler(req, res) {
 
     return res.status(200).json({
       qualified: true,
-      qualificationToken
+      qualificationToken,
+      phone
     });
   } catch (error) {
     console.error('Unexpected scan-cv error:', error);

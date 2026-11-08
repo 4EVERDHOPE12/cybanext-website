@@ -94,15 +94,27 @@
 
 <script>
     const registrationId = sessionStorage.getItem('digitalForensicsRegistrationId');
-    const applicantEmail = sessionStorage.getItem('digitalForensicsApplicantEmail');
+    const regularRegistrationId =
+        sessionStorage.getItem('regularTrackRegistrationId');
+    const selectedTrack = sessionStorage.getItem('selectedTrack');
+    const qualificationToken = sessionStorage.getItem('qualificationToken');
+    const applicantEmail =
+        sessionStorage.getItem('applicantEmail') ||
+        sessionStorage.getItem('digitalForensicsApplicantEmail');
     const retryMessage = document.getElementById('retryMessage');
     const tryAgainBtn =
         document.getElementById('tryAgainBtn');
 
     tryAgainBtn.addEventListener('click', async () => {
-        if (!registrationId || !applicantEmail) {
+        const isRegularTrack =
+            selectedTrack && selectedTrack !== 'digital_forensics';
+        const hasRegistration = isRegularTrack
+            ? regularRegistrationId && qualificationToken
+            : registrationId;
+
+        if (!hasRegistration || !applicantEmail) {
             retryMessage.textContent =
-                'Your Digital Forensics registration could not be found. Return to the course page and complete the registration again.';
+                'Your registration could not be found. Return to the application page and complete the registration again.';
             retryMessage.className = 'dfir-payment-message error';
             retryMessage.style.display = 'block';
             return;
@@ -115,20 +127,28 @@
 
         const pricingOption =
             sessionStorage.getItem('selectedPricingOption') || 'GHS';
-        const response = await fetch(
-            '../api/initialize-digital-forensics-payment',
-            {
+        const endpoint = isRegularTrack
+            ? '../api/initialize-payment'
+            : '../api/initialize-digital-forensics-payment';
+        const body = isRegularTrack
+            ? {
+                email: applicantEmail,
+                track: selectedTrack,
+                registrationId: regularRegistrationId,
+                qualificationToken
+            }
+            : {
+                email: applicantEmail,
+                registrationId,
+                pricingOption
+            };
+        const response = await fetch(endpoint, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({
-                    email: applicantEmail,
-                    registrationId,
-                    pricingOption
-                })
-            }
-        );
+                body: JSON.stringify(body)
+            });
         const result = await response.json();
 
         if (!response.ok || !result.authorizationUrl) {
