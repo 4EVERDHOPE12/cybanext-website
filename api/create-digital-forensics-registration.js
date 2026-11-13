@@ -1,4 +1,6 @@
 const { createRegistration } = require('../lib/digital-forensics-store');
+const { normalizeGhanaPhone } = require('../lib/ghana-phone');
+const { validateSmsConsent } = require('../lib/sms-consent');
 
 module.exports = async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -9,7 +11,14 @@ module.exports = async function handler(req, res) {
     const body = req.body || {};
     const fullName = typeof body.fullName === 'string' ? body.fullName.trim() : '';
     const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
-    const phone = typeof body.phone === 'string' ? body.phone.trim() : '';
+    let phone;
+    try {
+      phone = normalizeGhanaPhone(body.phone);
+      validateSmsConsent(body.smsConsent === undefined ? false : body.smsConsent, phone);
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+    const smsConsent = body.smsConsent === true;
 
     if (!fullName || fullName.length > 120) {
       return res.status(400).json({ error: 'Please provide your full name.' });
@@ -19,11 +28,12 @@ module.exports = async function handler(req, res) {
       return res.status(400).json({ error: 'Please provide a valid email address.' });
     }
 
-    if (phone && phone.length > 30) {
-      return res.status(400).json({ error: 'Please provide a valid phone number.' });
-    }
-
-    const registration = await createRegistration({ fullName, email, phone });
+    const registration = await createRegistration({
+      fullName,
+      email,
+      phone,
+      smsConsent
+    });
 
     return res.status(200).json({
       registrationId: registration.id,

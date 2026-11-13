@@ -1,7 +1,12 @@
 const https = require('https');
 const { getPaymentPrice } = require('../lib/payment-prices');
 const { verifyQualificationToken } = require('../lib/qualification-token');
-const { findRegistration, updateRegistration } = require('../lib/digital-forensics-store');
+const {
+  findRegistration,
+  updatePaymentStatusWithNotification
+} = require('../lib/digital-forensics-store');
+const regularPaymentStore = require('../lib/regular-track-payment-store');
+const { attemptImmediateDelivery } = require('../lib/email-notification-outbox');
 
 function verifyPaystackTransaction(reference) {
   return new Promise((resolve, reject) => {
@@ -92,8 +97,8 @@ module.exports = async (req, res) => {
     if (
       !result.status ||
       !result.data ||
-      result.data.status !== 'success' ||
-      result.data.reference !== reference
+      result.data.reference !== reference ||
+      !['success', 'failed'].includes(result.data.status)
     ) {
       return res.status(400).json({
         verified: false,
@@ -110,6 +115,76 @@ module.exports = async (req, res) => {
       metadata.qualification_token,
       { allowExpired: true }
     );
+
+    if (transaction.status === 'failed') {
+      if (transaction.status === 'failed' && track === 'digital_forensics' && registrationId) {
+        const registration = await findRegistration(registrationId);
+        const pricingOption = metadata && metadata.pricing_option;
+        const price = pricingOption && getPaymentPrice(track, pricingOption);
+        const expectedAmount = registration
+          ? Math.round(Number(registration.expectedAmount) * 100)
+          : NaN;
+        if (
+          registration &&
+          registration.course === 'digital_forensics' &&
+          registration.paymentReference === reference &&
+          registration.pricingOption === pricingOption &&
+          price &&
+          registration.expectedCurrency === price.paystackCurrency &&
+          Number.isSafeInteger(expectedAmount) &&
+          transaction.currency === registration.expectedCurrency &&
+          Number(transaction.amount) === expectedAmount &&
+          (typeof transaction.customer?.email !== 'string' ||
+            transaction.customer.email.toLowerCase() === registration.email)
+        ) {
+          const failedRegistration = await updatePaymentStatusWithNotification({
+            registrationId,
+            reference,
+            status: 'payment_failed'
+          });
+          if (failedRegistration) {
+            await attemptImmediateDelivery(failedRegistration.notificationEventKey);
+          }
+        }
+      }
+
+      if (track !== 'digital_forensics') {
+        const attempt = await regularPaymentStore.findPaymentAttempt(reference);
+        const validRegularPayment =
+          attempt &&
+          attempt.registrationId === registrationId &&
+          attempt.applicantStatus === 'payment_initiated' &&
+          ['initializing', 'payment_initiated'].includes(attempt.status) &&
+          track === attempt.track &&
+          attempt.track !== 'digital_forensics' &&
+          pricingOption === 'USD_REFERENCE' &&
+          transaction.currency === attempt.expectedCurrency &&
+          Number(transaction.amount) === Number(attempt.expectedAmount) &&
+          transaction.customer &&
+          typeof transaction.customer.email === 'string' &&
+          transaction.customer.email.toLowerCase() === attempt.email;
+
+        if (validRegularPayment) {
+          const failedAttempt =
+            await regularPaymentStore.markPaymentAttemptFailed(reference);
+          if (failedAttempt) {
+            await attemptImmediateDelivery(failedAttempt.eventKey);
+          }
+        }
+      }
+
+      return res.status(400).json({
+        verified: false,
+        error: 'The payment was not completed successfully.'
+      });
+    }
+
+    if (transaction.status !== 'success') {
+      return res.status(400).json({
+        verified: false,
+        error: 'The payment status could not be verified.'
+      });
+    }
 
     if (track === 'digital_forensics') {
       if (!registrationId) {
@@ -184,13 +259,12 @@ module.exports = async (req, res) => {
         });
       }
 
-      const updatedRegistration = await updateRegistration(registrationId, {
+      const updatedRegistration = await updatePaymentStatusWithNotification({
+        registrationId,
+        reference,
         status: 'payment_verified',
-        verifiedTransactionId: transaction.id || null,
+        transactionId: transaction.id || null,
         paymentVerificationTimestamp: new Date().toISOString()
-      }, {
-        expectedStatus: 'payment_initiated',
-        expectedPaymentReference: reference
       });
 
       if (!updatedRegistration) {
@@ -216,6 +290,94 @@ module.exports = async (req, res) => {
         });
       }
 
+      await attemptImmediateDelivery(updatedRegistration.notificationEventKey);
+      return res.status(200).json({
+        verified: true,
+        reference: transaction.reference,
+        track,
+        currency: transaction.currency,
+        registrationId
+      });
+    }
+
+    if (track !== 'digital_forensics') {
+      const attempt = await regularPaymentStore.findPaymentAttempt(reference);
+      const validRegularPayment =
+        attempt &&
+        attempt.registrationId === registrationId &&
+        track === attempt.track &&
+        attempt.track !== 'digital_forensics' &&
+        pricingOption === 'USD_REFERENCE' &&
+        transaction.currency === attempt.expectedCurrency &&
+        Number(transaction.amount) === Number(attempt.expectedAmount) &&
+        transaction.customer &&
+        typeof transaction.customer.email === 'string' &&
+        transaction.customer.email.toLowerCase() === attempt.email &&
+        qualificationClaims &&
+        qualificationClaims.track === attempt.track &&
+        qualificationClaims.email === attempt.email;
+
+      if (!validRegularPayment) {
+        return res.status(400).json({
+          verified: false,
+          error: 'Payment information could not be verified.'
+        });
+      }
+
+      if (
+        attempt.status === 'payment_verified' &&
+        String(attempt.verifiedTransactionId) === String(transaction.id)
+      ) {
+        return res.status(200).json({
+          verified: true,
+          reference: transaction.reference,
+          track,
+          currency: transaction.currency,
+          registrationId
+        });
+      }
+
+      if (
+        !['initializing', 'payment_initiated'].includes(attempt.status) ||
+        attempt.applicantStatus !== 'payment_initiated'
+      ) {
+        return res.status(409).json({
+          verified: false,
+          error: 'The payment attempt is not awaiting verification.'
+        });
+      }
+
+      const verifiedAttempt =
+        await regularPaymentStore.markPaymentAttemptVerified(
+          reference,
+          transaction.id
+        );
+
+      if (!verifiedAttempt) {
+        const latestAttempt =
+          await regularPaymentStore.findPaymentAttempt(reference);
+        if (
+          latestAttempt &&
+          latestAttempt.registrationId === registrationId &&
+          latestAttempt.status === 'payment_verified' &&
+          String(latestAttempt.verifiedTransactionId) === String(transaction.id)
+        ) {
+          return res.status(200).json({
+            verified: true,
+            reference: transaction.reference,
+            track,
+            currency: transaction.currency,
+            registrationId
+          });
+        }
+
+        return res.status(409).json({
+          verified: false,
+          error: 'The payment attempt changed while being verified.'
+        });
+      }
+
+      await attemptImmediateDelivery(verifiedAttempt.eventKey);
       return res.status(200).json({
         verified: true,
         reference: transaction.reference,

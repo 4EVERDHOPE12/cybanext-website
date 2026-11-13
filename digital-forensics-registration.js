@@ -19,7 +19,8 @@
       body: JSON.stringify({
         fullName: applicant.fullName,
         email: applicant.email,
-        phone: applicant.phone
+        phone: applicant.phone,
+        smsConsent: applicant.smsConsent === true
       })
     });
 

@@ -1,4 +1,4 @@
-const fs = require('node:fs');
+﻿const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
@@ -15,13 +15,32 @@ const TARGETS = {
 const EXPECTED_DATABASE = 'neondb';
 const MIGRATION_FILES = [
   '001_create_digital_forensics_registrations.sql',
-  '002_create_applicant_magic_link_auth.sql'
+  '002_create_applicant_magic_link_auth.sql',
+  '003_create_regular_track_payment_records.sql',
+  '004_create_email_notification_outbox.sql',
+  '005_create_sms_consent_events.sql',
+  '006_create_sms_notification_outbox.sql'
 ];
 const EXPECTED_TABLES = [
   'digital_forensics_registrations',
   'applicant_magic_link_tokens',
   'applicant_sessions',
-  'applicant_login_rate_limits'
+  'applicant_login_rate_limits',
+  'regular_track_applicants',
+  'regular_track_payment_attempts',
+  'email_notification_outbox',
+  'sms_consent_events',
+  'sms_notification_outbox'
+];
+const REGULAR_TRACK_OBJECTS = [
+  'regular_track_applicants',
+  'regular_track_applicants_pkey',
+  'regular_track_applicants_email_idx',
+  'regular_track_applicants_track_idx',
+  'regular_track_payment_attempts',
+  'regular_track_payment_attempts_pkey',
+  'regular_track_payment_attempts_verified_transaction_id_key',
+  'regular_track_payment_attempts_registration_idx'
 ];
 
 function splitSqlStatements(script) {
@@ -85,12 +104,144 @@ function splitSqlStatements(script) {
   return statements;
 }
 
+function normalizeSqlStatement(statement) {
+  return statement.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function isAllowedFunctionStatement(filename, statement) {
+  const normalized = normalizeSqlStatement(statement);
+  const allowed = {
+    '005_create_sms_consent_events.sql': [
+      "create or replace function public.prevent_sms_consent_event_mutation() returns trigger language plpgsql as $$ begin raise exception 'sms consent history is append-only' using errcode = '55000'; end; $$"
+    ],
+    '006_create_sms_notification_outbox.sql': [
+      "create or replace function public.require_paid_sms_notification_registration() returns trigger language plpgsql security invoker as $$ begin if new.regular_track_registration_id is not null then if not exists ( select 1 from public.regular_track_applicants where registration_id = new.regular_track_registration_id and status = 'payment_verified' ) then raise exception 'sms payment notifications require a verified payment' using errcode = '23514'; end if; elsif not exists ( select 1 from public.digital_forensics_registrations where registration_id = new.digital_forensics_registration_id and status = 'payment_verified' ) then raise exception 'sms payment notifications require a verified payment' using errcode = '23514'; end if; return new; end; $$",
+      "create or replace function public.set_sms_notification_outbox_completion_timestamp() returns trigger language plpgsql security invoker as $$ begin if tg_op = 'update' then if old.completed_at is not null then if new.completed_at is distinct from old.completed_at then raise exception 'sms notification completion timestamp is immutable' using errcode = '55000'; end if; return new; end if; end if; if new.completed_at is not null then raise exception 'sms notification completion timestamp is database-controlled' using errcode = '55000'; end if; if new.status in ('sent', 'permanent_failed', 'cancelled') then new.completed_at := clock_timestamp(); end if; return new; end; $$",
+      "create or replace function public.prevent_early_sms_notification_outbox_deletion() returns trigger language plpgsql security invoker as $$ begin if old.status not in ('sent', 'permanent_failed', 'cancelled') or old.completed_at is null or old.completed_at > clock_timestamp() - interval '90 days' then raise exception 'sms notification records cannot be deleted before the retention period' using errcode = '55000'; end if; return old; end; $$",
+      "create or replace function public.prevent_sms_notification_outbox_truncate() returns trigger language plpgsql security invoker as $$ begin raise exception 'sms notification records cannot be truncated' using errcode = '55000'; return null; end; $$",
+      "create or replace function public.purge_expired_sms_notification_outbox() returns integer language plpgsql security invoker as $$ declare deleted_count integer; begin delete from public.sms_notification_outbox where status in ('sent', 'permanent_failed', 'cancelled') and completed_at <= clock_timestamp() - interval '90 days'; get diagnostics deleted_count = row_count; return deleted_count; end; $$"
+    ]
+  };
+  return Boolean(allowed[filename]?.includes(normalized));
+}
+
+function isAllowedTriggerStatement(filename, statement) {
+  const normalized = normalizeSqlStatement(statement);
+  const allowed = {
+    '005_create_sms_consent_events.sql': [
+      'create trigger sms_consent_events_append_only before delete or update on public.sms_consent_events for each row execute function public.prevent_sms_consent_event_mutation()'
+    ],
+    '006_create_sms_notification_outbox.sql': [
+      'create trigger sms_notification_outbox_payment_success_guard before insert or update on public.sms_notification_outbox for each row execute function public.require_paid_sms_notification_registration()',
+      'create trigger sms_notification_outbox_completion_timestamp before insert or update on public.sms_notification_outbox for each row execute function public.set_sms_notification_outbox_completion_timestamp()',
+      'create trigger sms_notification_outbox_retention_guard before delete on public.sms_notification_outbox for each row execute function public.prevent_early_sms_notification_outbox_deletion()',
+      'create trigger sms_notification_outbox_no_truncate before truncate on public.sms_notification_outbox for each statement execute function public.prevent_sms_notification_outbox_truncate()'
+    ]
+  };
+  return Boolean(allowed[filename]?.includes(normalized));
+}
+
+function isAllowedSmsOutboxStatement(statement) {
+  const normalized = normalizeSqlStatement(statement);
+  const exactStatements = [
+    `CREATE TABLE IF NOT EXISTS sms_notification_outbox (
+      event_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      event_key TEXT NOT NULL UNIQUE CHECK (char_length(event_key) BETWEEN 1 AND 256),
+      event_type TEXT NOT NULL CHECK (event_type = 'sms_payment_success'),
+      regular_track_registration_id TEXT
+        REFERENCES regular_track_applicants (registration_id) ON DELETE RESTRICT,
+      digital_forensics_registration_id TEXT
+        REFERENCES digital_forensics_registrations (registration_id) ON DELETE RESTRICT,
+      phone_snapshot TEXT NOT NULL CHECK (phone_snapshot ~ '^\\+233[0-9]{9}$'),
+      template_data JSONB NOT NULL CHECK (jsonb_typeof(template_data) = 'object'),
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'sending', 'sent', 'permanent_failed', 'cancelled')),
+      attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+      next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      lease_expires_at TIMESTAMPTZ,
+      claim_token UUID,
+      provider_message_id TEXT,
+      last_error_code TEXT CHECK (
+        last_error_code IS NULL OR char_length(last_error_code) BETWEEN 1 AND 80
+      ),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      sent_at TIMESTAMPTZ,
+      completed_at TIMESTAMPTZ,
+      CONSTRAINT sms_notification_outbox_registration_check CHECK (
+        (regular_track_registration_id IS NOT NULL AND digital_forensics_registration_id IS NULL)
+        OR
+        (regular_track_registration_id IS NULL AND digital_forensics_registration_id IS NOT NULL)
+      ),
+      CONSTRAINT sms_notification_outbox_lease_check CHECK (
+        (
+          status = 'sending'
+          AND lease_expires_at IS NOT NULL
+          AND claim_token IS NOT NULL
+        )
+        OR
+        (
+          status <> 'sending'
+          AND lease_expires_at IS NULL
+          AND claim_token IS NULL
+        )
+      ),
+      CONSTRAINT sms_notification_outbox_sent_check CHECK (
+        (status = 'sent' AND sent_at IS NOT NULL)
+        OR (status <> 'sent' AND sent_at IS NULL)
+      ),
+      CONSTRAINT sms_notification_outbox_completed_check CHECK (
+        (
+          status IN ('sent', 'permanent_failed', 'cancelled')
+          AND completed_at IS NOT NULL
+        )
+        OR
+        (
+          status IN ('pending', 'sending')
+          AND completed_at IS NULL
+        )
+      )
+    )`,
+    `CREATE INDEX IF NOT EXISTS sms_notification_outbox_regular_registration_idx
+      ON sms_notification_outbox (regular_track_registration_id)`,
+    `CREATE INDEX IF NOT EXISTS sms_notification_outbox_digital_registration_idx
+      ON sms_notification_outbox (digital_forensics_registration_id)`,
+    `CREATE INDEX IF NOT EXISTS sms_notification_outbox_pending_due_idx
+      ON sms_notification_outbox (next_attempt_at, created_at)
+      WHERE status = 'pending'`,
+    `CREATE INDEX IF NOT EXISTS sms_notification_outbox_lease_expiry_idx
+      ON sms_notification_outbox (lease_expires_at)
+      WHERE status = 'sending'`,
+    `CREATE INDEX IF NOT EXISTS sms_notification_outbox_completed_retention_idx
+      ON sms_notification_outbox (completed_at)
+      WHERE completed_at IS NOT NULL`
+  ].map(normalizeSqlStatement);
+  return exactStatements.includes(normalized) ||
+    isAllowedFunctionStatement('006_create_sms_notification_outbox.sql', statement) ||
+    isAllowedTriggerStatement('006_create_sms_notification_outbox.sql', statement) ||
+    normalized === normalizeSqlStatement(`REVOKE ALL ON FUNCTION
+      public.require_paid_sms_notification_registration(),
+      public.set_sms_notification_outbox_completion_timestamp(),
+      public.prevent_early_sms_notification_outbox_deletion(),
+      public.prevent_sms_notification_outbox_truncate(),
+      public.purge_expired_sms_notification_outbox()
+    FROM PUBLIC`);
+}
+
 function loadMigrations(migrationsDirectory = path.join(__dirname, '..', 'db', 'migrations')) {
   return MIGRATION_FILES.map((filename) => {
     const content = fs.readFileSync(path.join(migrationsDirectory, filename), 'utf8');
     const statements = splitSqlStatements(content);
+    const supportedStatement = filename === '006_create_sms_notification_outbox.sql'
+      ? isAllowedSmsOutboxStatement
+      : (statement) =>
+        /^CREATE\s+(?:TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\b/i.test(statement) ||
+        isAllowedFunctionStatement(filename, statement) ||
+        isAllowedTriggerStatement(filename, statement) ||
+        (filename === '004_create_email_notification_outbox.sql' &&
+          /^ALTER\s+TABLE\s+public\.digital_forensics_registrations\s+(?:DROP\s+CONSTRAINT\s+digital_forensics_registrations_status_check|ADD\s+CONSTRAINT\s+digital_forensics_registrations_status_check\s+CHECK\s*\(status\s+IN\s*\('pending',\s*'payment_initiated',\s*'payment_verified',\s*'paid',\s*'payment_failed'\)\))$/i.test(statement));
     if (statements.length === 0 || statements.some((statement) =>
-      !/^CREATE\s+(?:TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\b/i.test(statement))) {
+      !supportedStatement(statement))) {
       throw new Error(`Migration ${filename} contains an unsupported statement.`);
     }
     return { filename, statements, checksum: crypto.createHash('sha256').update(content, 'utf8').digest('hex') };
@@ -160,7 +311,19 @@ function validateEndpointConfiguration(target, environment) {
   try { connectionUrl = new URL(environment.DATABASE_URL); }
   catch { throw new Error('DATABASE_URL is not a valid PostgreSQL URL.'); }
   if (!['postgres:', 'postgresql:'].includes(connectionUrl.protocol)) throw new Error('DATABASE_URL must use PostgreSQL.');
-  if (connectionUrl.hostname.toLowerCase() !== selectedHost) {
+  const hasHostOverride = [...connectionUrl.searchParams.keys()].some((parameter) =>
+    ['host', 'hostaddr'].includes(parameter.toLowerCase()));
+  if (hasHostOverride) {
+    throw new Error('DATABASE_URL must not override the configured endpoint host.');
+  }
+  let effectiveHost;
+  try {
+    const { Client } = require('@neondatabase/serverless');
+    effectiveHost = new Client({ connectionString: environment.DATABASE_URL }).connectionParameters.host;
+  } catch {
+    throw new Error('Could not verify the effective database endpoint host.');
+  }
+  if (typeof effectiveHost !== 'string' || effectiveHost.toLowerCase() !== selectedHost) {
     throw new Error('DATABASE_URL endpoint does not match the selected migration target.');
   }
 }
@@ -177,6 +340,10 @@ async function verifyConnectionTarget(sql, target, environment) {
 
 function normalizeDefinition(value) {
   return String(value).toLowerCase().replace(/\s+/g, ' ').replace(/\s*([(),])\s*/g, '$1').trim();
+}
+
+function normalizeFunctionSource(value) {
+  return String(value).replace(/\r\n/g, '\n').trim().replace(/;\s*$/, '');
 }
 
 function normalizePredicate(value) {
@@ -374,7 +541,13 @@ function hasTopLevelPredicateOperator(expression) {
     token === 'PREDICATE' || token === 'IS' || token === 'IN' || token === 'LIKE' || token === 'ILIKE' || token === 'BETWEEN');
 }
 
-function expectedSchema() {
+function expectedSchema({
+  includeRegularTrack = true,
+  includeEmailOutbox = includeRegularTrack,
+  includePaymentFailed = includeEmailOutbox,
+  includeSmsConsent = includeEmailOutbox,
+  includeSmsOutbox = includeSmsConsent
+} = {}) {
   const columns = {
     digital_forensics_registrations: {
       registration_id: ['text', true, null], full_name: ['text', true, null], email: ['text', true, null],
@@ -396,6 +569,61 @@ function expectedSchema() {
     applicant_login_rate_limits: {
       scope: ['text', true, null], key_hash: ['text', true, null], window_started_at: ['timestamp with time zone', true, null],
       request_count: ['integer', true, null]
+    },
+    regular_track_applicants: {
+      registration_id: ['text', true, null], full_name: ['text', true, null], email: ['text', true, null],
+      phone: ['text', true, "''::text"], track: ['text', true, null], status: ['text', true, null],
+      created_at: ['timestamp with time zone', true, 'CURRENT_TIMESTAMP'], updated_at: ['timestamp with time zone', true, 'CURRENT_TIMESTAMP']
+    },
+    regular_track_payment_attempts: {
+      payment_reference: ['text', true, null], registration_id: ['text', true, null],
+      reference_amount: ['numeric(12,2)', true, null], reference_currency: ['text', true, null],
+      expected_amount: ['integer', true, null], expected_currency: ['text', true, null],
+      status: ['text', true, null], verified_transaction_id: ['text', false, null],
+      payment_verification_timestamp: ['timestamp with time zone', false, null],
+      created_at: ['timestamp with time zone', true, 'CURRENT_TIMESTAMP'], updated_at: ['timestamp with time zone', true, 'CURRENT_TIMESTAMP']
+    },
+    email_notification_outbox: {
+      event_id: ['uuid', true, 'gen_random_uuid()'], event_key: ['text', true, null],
+      event_type: ['text', true, null], regular_track_registration_id: ['text', false, null],
+      digital_forensics_registration_id: ['text', false, null], recipient_email: ['text', true, null],
+      template_data: ['jsonb', true, null], status: ['text', true, "'pending'::text"],
+      attempt_count: ['integer', true, '0'], next_attempt_at: ['timestamp with time zone', true, 'CURRENT_TIMESTAMP'],
+      lease_expires_at: ['timestamp with time zone', false, null], claim_token: ['uuid', false, null],
+      last_error_code: ['text', false, null], created_at: ['timestamp with time zone', true, 'CURRENT_TIMESTAMP'],
+      updated_at: ['timestamp with time zone', true, 'CURRENT_TIMESTAMP'],
+      sent_at: ['timestamp with time zone', false, null]
+    },
+    sms_consent_events: {
+      event_id: ['uuid', true, 'gen_random_uuid()'],
+      regular_track_registration_id: ['text', false, null],
+      digital_forensics_registration_id: ['text', false, null],
+      event_type: ['text', true, null],
+      phone_snapshot: ['text', true, null],
+      purpose: ['text', true, null],
+      policy_version: ['text', true, null],
+      source: ['text', true, null],
+      occurred_at: ['timestamp with time zone', true, 'CURRENT_TIMESTAMP']
+    },
+    sms_notification_outbox: {
+      event_id: ['uuid', true, 'gen_random_uuid()'],
+      event_key: ['text', true, null],
+      event_type: ['text', true, null],
+      regular_track_registration_id: ['text', false, null],
+      digital_forensics_registration_id: ['text', false, null],
+      phone_snapshot: ['text', true, null],
+      template_data: ['jsonb', true, null],
+      status: ['text', true, "'pending'::text"],
+      attempt_count: ['integer', true, '0'],
+      next_attempt_at: ['timestamp with time zone', true, 'CURRENT_TIMESTAMP'],
+      lease_expires_at: ['timestamp with time zone', false, null],
+      claim_token: ['uuid', false, null],
+      provider_message_id: ['text', false, null],
+      last_error_code: ['text', false, null],
+      created_at: ['timestamp with time zone', true, 'CURRENT_TIMESTAMP'],
+      updated_at: ['timestamp with time zone', true, 'CURRENT_TIMESTAMP'],
+      sent_at: ['timestamp with time zone', false, null],
+      completed_at: ['timestamp with time zone', false, null]
     }
   };
   const constraint = (table, type, columnsList, definition = null, references = null) => ({
@@ -410,7 +638,7 @@ function expectedSchema() {
     constraint('digital_forensics_registrations', 'c', [], 'CHECK ((char_length(full_name) >= 1) AND (char_length(full_name) <= 120))'),
     constraint('digital_forensics_registrations', 'c', [], 'CHECK ((email = lower(email)))'),
     constraint('digital_forensics_registrations', 'c', [], "CHECK ((course = 'digital_forensics'::text))"),
-    constraint('digital_forensics_registrations', 'c', [], "CHECK ((status = ANY (ARRAY['pending'::text, 'payment_initiated'::text, 'payment_verified'::text, 'paid'::text])))"),
+    constraint('digital_forensics_registrations', 'c', [], `CHECK ((status = ANY (ARRAY['pending'::text, 'payment_initiated'::text, 'payment_verified'::text, 'paid'::text${includePaymentFailed ? ", 'payment_failed'::text" : ''}])))`),
     constraint('digital_forensics_registrations', 'c', [], "CHECK (((pricing_option IS NULL) OR (pricing_option = ANY (ARRAY['GHS'::text, 'USD_REFERENCE'::text]))))"),
     constraint('digital_forensics_registrations', 'c', [], 'CHECK ((expected_amount > (0)::numeric))'),
     constraint('digital_forensics_registrations', 'c', [], "CHECK ((expected_currency = 'GHS'::text))"),
@@ -425,7 +653,57 @@ function expectedSchema() {
     constraint('applicant_login_rate_limits', 'p', ['scope', 'key_hash']),
     constraint('applicant_login_rate_limits', 'c', [], "CHECK ((scope = ANY (ARRAY['email'::text, 'ip'::text])))"),
     constraint('applicant_login_rate_limits', 'c', [], "CHECK ((key_hash ~ '^[a-f0-9]{64}$'::text))"),
-    constraint('applicant_login_rate_limits', 'c', [], 'CHECK ((request_count > 0))')
+    constraint('applicant_login_rate_limits', 'c', [], 'CHECK ((request_count > 0))'),
+    constraint('regular_track_applicants', 'p', ['registration_id']),
+    constraint('regular_track_applicants', 'c', [], 'CHECK ((char_length(full_name) >= 1) AND (char_length(full_name) <= 120))'),
+    constraint('regular_track_applicants', 'c', [], 'CHECK ((email = lower(email)))'),
+    constraint('regular_track_applicants', 'c', [], "CHECK ((track = ANY (ARRAY['incident_response'::text, 'soc_analyst'::text, 'network_security'::text, 'web_app_penetration_testing'::text, 'cloud_security'::text])))"),
+    constraint('regular_track_applicants', 'c', [], "CHECK ((status = ANY (ARRAY['pending'::text, 'payment_initiated'::text, 'payment_verified'::text])))"),
+    constraint('regular_track_payment_attempts', 'p', ['payment_reference']),
+    constraint('regular_track_payment_attempts', 'f', ['registration_id'], null, { table: 'regular_track_applicants', columns: ['registration_id'], deleteAction: 'c', updateAction: 'a', matchType: 's' }),
+    constraint('regular_track_payment_attempts', 'u', ['verified_transaction_id']),
+    constraint('regular_track_payment_attempts', 'c', [], 'CHECK ((reference_amount > (0)::numeric))'),
+    constraint('regular_track_payment_attempts', 'c', [], "CHECK ((reference_currency = 'USD'::text))"),
+    constraint('regular_track_payment_attempts', 'c', [], 'CHECK ((expected_amount > 0))'),
+    constraint('regular_track_payment_attempts', 'c', [], "CHECK ((expected_currency = 'GHS'::text))"),
+    constraint('regular_track_payment_attempts', 'c', [], "CHECK ((status = ANY (ARRAY['initializing'::text, 'payment_initiated'::text, 'payment_verified'::text, 'failed'::text, 'initialization_failed'::text])))"),
+    constraint('email_notification_outbox', 'p', ['event_id']),
+    constraint('email_notification_outbox', 'u', ['event_key']),
+    constraint('email_notification_outbox', 'f', ['regular_track_registration_id'], null, { table: 'regular_track_applicants', columns: ['registration_id'], deleteAction: 'c', updateAction: 'a', matchType: 's' }),
+    constraint('email_notification_outbox', 'f', ['digital_forensics_registration_id'], null, { table: 'digital_forensics_registrations', columns: ['registration_id'], deleteAction: 'c', updateAction: 'a', matchType: 's' }),
+    constraint('email_notification_outbox', 'c', [], "CHECK ((event_type = ANY (ARRAY['regular_track_registration_confirmation'::text, 'digital_forensics_registration_confirmation'::text, 'regular_track_payment_success'::text, 'digital_forensics_payment_success'::text, 'regular_track_payment_failure'::text, 'digital_forensics_payment_failure'::text])))"),
+    constraint('email_notification_outbox', 'c', [], "CHECK ((recipient_email = lower(recipient_email)))"),
+    constraint('email_notification_outbox', 'c', [], "CHECK ((jsonb_typeof(template_data) = 'object'::text))"),
+    constraint('email_notification_outbox', 'c', [], "CHECK ((status = ANY (ARRAY['pending'::text, 'sending'::text, 'sent'::text, 'permanent_failed'::text])))"),
+    constraint('email_notification_outbox', 'c', [], 'CHECK ((attempt_count >= 0))'),
+    constraint('email_notification_outbox', 'c', [], "CHECK (((last_error_code IS NULL) OR (last_error_code = ANY (ARRAY['configuration_missing'::text, 'resend_rejected'::text, 'resend_rate_limited'::text, 'resend_server_error'::text, 'network_error'::text, 'timeout'::text, 'invalid_response'::text, 'invalid_template_data'::text, 'delivery_error'::text, 'max_attempts'::text]))))"),
+    constraint('email_notification_outbox', 'c', [], "CHECK (event_type = ANY (ARRAY['regular_track_registration_confirmation'::text, 'regular_track_payment_success'::text, 'regular_track_payment_failure'::text]) AND regular_track_registration_id IS NOT NULL AND digital_forensics_registration_id IS NULL OR event_type = ANY (ARRAY['digital_forensics_registration_confirmation'::text, 'digital_forensics_payment_success'::text, 'digital_forensics_payment_failure'::text]) AND digital_forensics_registration_id IS NOT NULL AND regular_track_registration_id IS NULL)"),
+    constraint('email_notification_outbox', 'c', [], "CHECK (status = 'sending'::text AND lease_expires_at IS NOT NULL AND claim_token IS NOT NULL OR status <> 'sending'::text AND lease_expires_at IS NULL AND claim_token IS NULL)"),
+    constraint('email_notification_outbox', 'c', [], "CHECK (status = 'sent'::text AND sent_at IS NOT NULL OR status <> 'sent'::text AND sent_at IS NULL)"),
+    constraint('sms_consent_events', 'p', ['event_id']),
+    constraint('sms_consent_events', 'f', ['regular_track_registration_id'], null, { table: 'regular_track_applicants', columns: ['registration_id'], deleteAction: 'r', updateAction: 'a', matchType: 's' }),
+    constraint('sms_consent_events', 'f', ['digital_forensics_registration_id'], null, { table: 'digital_forensics_registrations', columns: ['registration_id'], deleteAction: 'r', updateAction: 'a', matchType: 's' }),
+    constraint('sms_consent_events', 'c', [], "CHECK ((event_type = ANY (ARRAY['grant'::text, 'withdrawal'::text])))"),
+    constraint('sms_consent_events', 'c', [], "CHECK ((phone_snapshot ~ '^\\+[1-9][0-9]{1,14}$'::text))"),
+    constraint('sms_consent_events', 'c', [], "CHECK ((purpose = 'SMS notifications confirming successful payment for a Cybanext programme.'::text))"),
+    constraint('sms_consent_events', 'c', [], 'CHECK ((char_length(policy_version) >= 1) AND (char_length(policy_version) <= 80))'),
+    constraint('sms_consent_events', 'c', [], "CHECK ((source = ANY (ARRAY['main_application'::text, 'digital_forensics_standalone'::text])))"),
+    constraint('sms_consent_events', 'c', [], "CHECK (regular_track_registration_id IS NOT NULL AND digital_forensics_registration_id IS NULL OR regular_track_registration_id IS NULL AND digital_forensics_registration_id IS NOT NULL)"),
+    constraint('sms_notification_outbox', 'p', ['event_id']),
+    constraint('sms_notification_outbox', 'u', ['event_key']),
+    constraint('sms_notification_outbox', 'f', ['regular_track_registration_id'], null, { table: 'regular_track_applicants', columns: ['registration_id'], deleteAction: 'r', updateAction: 'a', matchType: 's' }),
+    constraint('sms_notification_outbox', 'f', ['digital_forensics_registration_id'], null, { table: 'digital_forensics_registrations', columns: ['registration_id'], deleteAction: 'r', updateAction: 'a', matchType: 's' }),
+    constraint('sms_notification_outbox', 'c', [], 'CHECK ((char_length(event_key) >= 1) AND (char_length(event_key) <= 256))'),
+    constraint('sms_notification_outbox', 'c', [], "CHECK ((event_type = 'sms_payment_success'::text))"),
+    constraint('sms_notification_outbox', 'c', [], "CHECK ((phone_snapshot ~ '^\\+233[0-9]{9}$'::text))"),
+    constraint('sms_notification_outbox', 'c', [], "CHECK ((jsonb_typeof(template_data) = 'object'::text))"),
+    constraint('sms_notification_outbox', 'c', [], "CHECK ((status = ANY (ARRAY['pending'::text, 'sending'::text, 'sent'::text, 'permanent_failed'::text, 'cancelled'::text])))"),
+    constraint('sms_notification_outbox', 'c', [], 'CHECK ((attempt_count >= 0))'),
+    constraint('sms_notification_outbox', 'c', [], "CHECK (last_error_code IS NULL OR char_length(last_error_code) >= 1 AND char_length(last_error_code) <= 80)"),
+    constraint('sms_notification_outbox', 'c', [], "CHECK (regular_track_registration_id IS NOT NULL AND digital_forensics_registration_id IS NULL OR regular_track_registration_id IS NULL AND digital_forensics_registration_id IS NOT NULL)"),
+    constraint('sms_notification_outbox', 'c', [], "CHECK (status = 'sending'::text AND lease_expires_at IS NOT NULL AND claim_token IS NOT NULL OR status <> 'sending'::text AND lease_expires_at IS NULL AND claim_token IS NULL)"),
+    constraint('sms_notification_outbox', 'c', [], "CHECK (status = 'sent'::text AND sent_at IS NOT NULL OR status <> 'sent'::text AND sent_at IS NULL)"),
+    constraint('sms_notification_outbox', 'c', [], "CHECK (status = ANY (ARRAY['sent'::text, 'permanent_failed'::text, 'cancelled'::text]) AND completed_at IS NOT NULL OR status = ANY (ARRAY['pending'::text, 'sending'::text]) AND completed_at IS NULL)")
   ];
 
   const indexes = [
@@ -439,26 +717,280 @@ function expectedSchema() {
     ['applicant_sessions_pkey', 'applicant_sessions', ['session_token_hash'], true, true, null],
     ['applicant_sessions_registration_idx', 'applicant_sessions', ['registration_id'], false, false, null],
     ['applicant_sessions_expiry_idx', 'applicant_sessions', ['expires_at'], false, false, '(revoked_at IS NULL)'],
-    ['applicant_login_rate_limits_pkey', 'applicant_login_rate_limits', ['scope', 'key_hash'], true, true, null]
+    ['applicant_login_rate_limits_pkey', 'applicant_login_rate_limits', ['scope', 'key_hash'], true, true, null],
+    ['regular_track_applicants_pkey', 'regular_track_applicants', ['registration_id'], true, true, null],
+    ['regular_track_applicants_email_idx', 'regular_track_applicants', ['email'], false, false, null],
+    ['regular_track_applicants_track_idx', 'regular_track_applicants', ['track'], false, false, null],
+    ['regular_track_payment_attempts_pkey', 'regular_track_payment_attempts', ['payment_reference'], true, true, null],
+    ['regular_track_payment_attempts_verified_transaction_id_key', 'regular_track_payment_attempts', ['verified_transaction_id'], true, false, null],
+    ['regular_track_payment_attempts_registration_idx', 'regular_track_payment_attempts', ['registration_id'], false, false, null],
+    ['email_notification_outbox_pkey', 'email_notification_outbox', ['event_id'], true, true, null],
+    ['email_notification_outbox_event_key_key', 'email_notification_outbox', ['event_key'], true, false, null],
+    ['email_notification_outbox_regular_registration_idx', 'email_notification_outbox', ['regular_track_registration_id'], false, false, null],
+    ['email_notification_outbox_digital_registration_idx', 'email_notification_outbox', ['digital_forensics_registration_id'], false, false, null],
+    ['email_notification_outbox_pending_due_idx', 'email_notification_outbox', ['next_attempt_at', 'created_at'], false, false, "(status = 'pending'::text)"],
+    ['email_notification_outbox_lease_expiry_idx', 'email_notification_outbox', ['lease_expires_at'], false, false, "(status = 'sending'::text)"],
+    ['sms_consent_events_pkey', 'sms_consent_events', ['event_id'], true, true, null],
+    ['sms_consent_events_regular_registration_idx', 'sms_consent_events', ['regular_track_registration_id', 'occurred_at'], false, false, null],
+    ['sms_consent_events_digital_registration_idx', 'sms_consent_events', ['digital_forensics_registration_id', 'occurred_at'], false, false, null],
+    ['sms_notification_outbox_pkey', 'sms_notification_outbox', ['event_id'], true, true, null],
+    ['sms_notification_outbox_event_key_key', 'sms_notification_outbox', ['event_key'], true, false, null],
+    ['sms_notification_outbox_regular_registration_idx', 'sms_notification_outbox', ['regular_track_registration_id'], false, false, null],
+    ['sms_notification_outbox_digital_registration_idx', 'sms_notification_outbox', ['digital_forensics_registration_id'], false, false, null],
+    ['sms_notification_outbox_pending_due_idx', 'sms_notification_outbox', ['next_attempt_at', 'created_at'], false, false, "(status = 'pending'::text)"],
+    ['sms_notification_outbox_lease_expiry_idx', 'sms_notification_outbox', ['lease_expires_at'], false, false, "(status = 'sending'::text)"],
+    ['sms_notification_outbox_completed_retention_idx', 'sms_notification_outbox', ['completed_at'], false, false, '(completed_at IS NOT NULL)']
   ].map(([name, table, columnsList, unique, primary, predicate]) => ({
     name, table, columns: columnsList, unique, primary, method: 'btree', predicate: predicate && normalizePredicate(predicate),
     valid: true, ready: true, live: true, nullsNotDistinct: false
   }));
-  return { columns, constraints, indexes };
+  if (!includeRegularTrack) {
+    delete columns.regular_track_applicants;
+    delete columns.regular_track_payment_attempts;
+  }
+  if (!includeEmailOutbox) {
+    delete columns.email_notification_outbox;
+  }
+  if (!includeSmsConsent) {
+    delete columns.sms_consent_events;
+  }
+  if (!includeSmsOutbox) {
+    delete columns.sms_notification_outbox;
+  }
+  const relevantTables = new Set(Object.keys(columns));
+  const filteredConstraints = constraints.filter((item) =>
+    relevantTables.has(item.table) &&
+    (includePaymentFailed || item.table !== 'digital_forensics_registrations' ||
+      item.type !== 'c' || !item.definition.includes("'payment_failed'")));
+  const filteredIndexes = indexes.filter((item) =>
+    relevantTables.has(item.table));
+  const triggers = [
+    ...(includeSmsConsent ? [{
+      table: 'sms_consent_events',
+      name: 'sms_consent_events_append_only',
+      enabled: 'O',
+      definition: 'CREATE TRIGGER sms_consent_events_append_only BEFORE DELETE OR UPDATE ON sms_consent_events FOR EACH ROW EXECUTE FUNCTION prevent_sms_consent_event_mutation()',
+      functionName: 'prevent_sms_consent_event_mutation',
+      functionSource: "BEGIN\n  RAISE EXCEPTION 'SMS consent history is append-only' USING ERRCODE = '55000';\nEND"
+    }] : []),
+    ...(includeSmsOutbox ? [{
+      table: 'sms_notification_outbox',
+      name: 'sms_notification_outbox_payment_success_guard',
+      enabled: 'O',
+      definition: 'CREATE TRIGGER sms_notification_outbox_payment_success_guard BEFORE INSERT OR UPDATE ON sms_notification_outbox FOR EACH ROW EXECUTE FUNCTION require_paid_sms_notification_registration()',
+      functionName: 'require_paid_sms_notification_registration',
+      functionSource: "BEGIN\n  IF NEW.regular_track_registration_id IS NOT NULL THEN\n    IF NOT EXISTS (\n      SELECT 1\n      FROM public.regular_track_applicants\n      WHERE registration_id = NEW.regular_track_registration_id\n        AND status = 'payment_verified'\n    ) THEN\n      RAISE EXCEPTION 'SMS payment notifications require a verified payment'\n        USING ERRCODE = '23514';\n    END IF;\n  ELSIF NOT EXISTS (\n    SELECT 1\n    FROM public.digital_forensics_registrations\n    WHERE registration_id = NEW.digital_forensics_registration_id\n      AND status IN ('payment_verified', 'paid')\n  ) THEN\n    RAISE EXCEPTION 'SMS payment notifications require a verified payment'\n      USING ERRCODE = '23514';\n  END IF;\n  RETURN NEW;\nEND"
+    }, {
+      table: 'sms_notification_outbox',
+      name: 'sms_notification_outbox_retention_guard',
+      enabled: 'O',
+      definition: 'CREATE TRIGGER sms_notification_outbox_retention_guard BEFORE DELETE ON sms_notification_outbox FOR EACH ROW EXECUTE FUNCTION prevent_early_sms_notification_outbox_deletion()',
+      functionName: 'prevent_early_sms_notification_outbox_deletion',
+      functionSource: "BEGIN\n  IF OLD.status NOT IN ('sent', 'permanent_failed', 'cancelled')\n    OR OLD.completed_at IS NULL\n          OR OLD.completed_at > clock_timestamp() - INTERVAL '90 days'\n  THEN\n    RAISE EXCEPTION 'SMS notification records cannot be deleted before the retention period'\n      USING ERRCODE = '55000';\n  END IF;\n  RETURN OLD;\nEND"
+    }, {
+      table: 'sms_notification_outbox',
+      name: 'sms_notification_outbox_completion_timestamp',
+      enabled: 'O',
+      definition: 'CREATE TRIGGER sms_notification_outbox_completion_timestamp BEFORE INSERT OR UPDATE ON sms_notification_outbox FOR EACH ROW EXECUTE FUNCTION set_sms_notification_outbox_completion_timestamp()',
+      functionName: 'set_sms_notification_outbox_completion_timestamp',
+      functionSource: ''
+    }, {
+      table: 'sms_notification_outbox',
+      name: 'sms_notification_outbox_no_truncate',
+      enabled: 'O',
+      definition: 'CREATE TRIGGER sms_notification_outbox_no_truncate BEFORE TRUNCATE ON sms_notification_outbox FOR EACH STATEMENT EXECUTE FUNCTION prevent_sms_notification_outbox_truncate()',
+      functionName: 'prevent_sms_notification_outbox_truncate',
+      functionSource: ''
+    }] : [])
+  ];
+  const functions = includeSmsOutbox ? [{
+    name: 'require_paid_sms_notification_registration',
+    identityArguments: '',
+    returnType: 'trigger',
+    language: 'plpgsql',
+    securityDefiner: false,
+    publicExecute: false,
+    otherPrivileges: [],
+    source: `BEGIN
+  IF NEW.regular_track_registration_id IS NOT NULL THEN
+    IF NOT EXISTS (
+      SELECT 1
+      FROM public.regular_track_applicants
+      WHERE registration_id = NEW.regular_track_registration_id
+        AND status = 'payment_verified'
+    ) THEN
+      RAISE EXCEPTION 'SMS payment notifications require a verified payment'
+        USING ERRCODE = '23514';
+    END IF;
+  ELSIF NOT EXISTS (
+    SELECT 1
+    FROM public.digital_forensics_registrations
+    WHERE registration_id = NEW.digital_forensics_registration_id
+      AND status = 'payment_verified'
+  ) THEN
+    RAISE EXCEPTION 'SMS payment notifications require a verified payment'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END`
+  }, {
+    name: 'set_sms_notification_outbox_completion_timestamp',
+    identityArguments: '',
+    returnType: 'trigger',
+    language: 'plpgsql',
+    securityDefiner: false,
+    publicExecute: false,
+    otherPrivileges: [],
+    source: `BEGIN
+  IF TG_OP = 'UPDATE' THEN
+    IF OLD.completed_at IS NOT NULL THEN
+      IF NEW.completed_at IS DISTINCT FROM OLD.completed_at THEN
+        RAISE EXCEPTION 'SMS notification completion timestamp is immutable'
+          USING ERRCODE = '55000';
+      END IF;
+      RETURN NEW;
+    END IF;
+  END IF;
+
+  IF NEW.completed_at IS NOT NULL THEN
+    RAISE EXCEPTION 'SMS notification completion timestamp is database-controlled'
+      USING ERRCODE = '55000';
+  END IF;
+
+  IF NEW.status IN ('sent', 'permanent_failed', 'cancelled') THEN
+    NEW.completed_at := clock_timestamp();
+  END IF;
+  RETURN NEW;
+END`
+  }, {
+    name: 'prevent_early_sms_notification_outbox_deletion',
+    identityArguments: '',
+    returnType: 'trigger',
+    language: 'plpgsql',
+    securityDefiner: false,
+    publicExecute: false,
+    otherPrivileges: [],
+    source: `BEGIN
+  IF OLD.status NOT IN ('sent', 'permanent_failed', 'cancelled')
+    OR OLD.completed_at IS NULL
+    OR OLD.completed_at > clock_timestamp() - INTERVAL '90 days'
+  THEN
+    RAISE EXCEPTION 'SMS notification records cannot be deleted before the retention period'
+      USING ERRCODE = '55000';
+  END IF;
+  RETURN OLD;
+END`
+  }, {
+    name: 'prevent_sms_notification_outbox_truncate',
+    identityArguments: '',
+    returnType: 'trigger',
+    language: 'plpgsql',
+    securityDefiner: false,
+    publicExecute: false,
+    otherPrivileges: [],
+    source: `BEGIN
+  RAISE EXCEPTION 'SMS notification records cannot be truncated'
+    USING ERRCODE = '55000';
+  RETURN NULL;
+END`
+  }, {
+    name: 'purge_expired_sms_notification_outbox',
+    identityArguments: '',
+    returnType: 'integer',
+    language: 'plpgsql',
+    securityDefiner: false,
+    publicExecute: false,
+    otherPrivileges: [],
+    source: `DECLARE
+  deleted_count INTEGER;
+BEGIN
+  DELETE FROM public.sms_notification_outbox
+  WHERE status IN ('sent', 'permanent_failed', 'cancelled')
+    AND completed_at <= clock_timestamp() - INTERVAL '90 days';
+  GET DIAGNOSTICS deleted_count = ROW_COUNT;
+  RETURN deleted_count;
+END`
+  }] : [];
+  for (const trigger of triggers) {
+    const functionMetadata = functions.find(({ name }) => name === trigger.functionName);
+    if (functionMetadata) trigger.functionSource = functionMetadata.source;
+  }
+  const tables = Object.keys(columns).map((name) => ({
+    name, kind: 'r', persistence: 'p', rowSecurity: false, forceRowSecurity: false
+  }));
+  return {
+    tables,
+    columns,
+    constraints: filteredConstraints,
+    indexes: filteredIndexes,
+    triggers,
+    functions
+  };
 }
 
 function throwSchemaMismatch(category, expected, actual, testOnly) {
-  const error = new Error(`Existing development schema does not exactly match the migrations (${category}).`);
+  const error = new Error(`Database schema does not exactly match the migrations (${category}).`);
+  error.schemaMismatchCategory = category;
   if (testOnly) error.schemaDiagnostic = { category, expected, actual };
   throw error;
 }
 
-async function inspectExistingSchema(sql, { testOnly = false } = {}) {
-  const expected = expectedSchema();
+function safeSchemaMismatchCategory(error) {
+  const categories = [
+    'tables and row-level security settings',
+    'columns',
+    'unexpected or missing columns',
+    'constraints and relationships',
+    'indexes',
+    'triggers',
+    'functions',
+    'row-level security policies',
+    'table and column privileges',
+    'migration history triggers',
+    'migration history row-level security',
+    'migration history privileges',
+    'migration history records'
+  ];
+  if (categories.includes(error?.schemaMismatchCategory)) return error.schemaMismatchCategory;
+  return categories.find((category) => error?.message?.includes(category)) || null;
+}
+
+async function inspectExistingSchema(sql, {
+  testOnly = false,
+  includeRegularTrack = true,
+  includeEmailOutbox = includeRegularTrack,
+  includePaymentFailed = includeEmailOutbox,
+  includeSmsConsent = includeEmailOutbox,
+  includeSmsOutbox = includeSmsConsent
+} = {}) {
+  const expected = expectedSchema({
+    includeRegularTrack,
+    includeEmailOutbox,
+    includePaymentFailed,
+    includeSmsConsent,
+    includeSmsOutbox
+  });
+  const expectedTableNames = expected.tables.map((table) => table.name);
   const safeQuery = async (statement) => {
     try { return await sql.query(statement); }
     catch { throw new Error('Could not inspect the existing development schema.'); }
   };
+  const tables = await safeQuery(`
+    SELECT c.relname AS table_name, c.relkind AS relation_kind, c.relpersistence AS persistence,
+           c.relrowsecurity AS row_security, c.relforcerowsecurity AS force_row_security
+    FROM pg_catalog.pg_class c
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND c.relname IN (${expectedTableNames.map(quoteLiteral).join(', ')})
+  `);
+  const actualTables = tables.map((row) => JSON.stringify({
+    name: row.table_name, kind: row.relation_kind, persistence: row.persistence,
+    rowSecurity: row.row_security, forceRowSecurity: row.force_row_security
+  })).sort();
+  const expectedTables = expected.tables.map((item) => JSON.stringify(item)).sort();
+  if (JSON.stringify(actualTables) !== JSON.stringify(expectedTables)) {
+    throwSchemaMismatch('tables and row-level security settings', expected.tables, actualTables.map(JSON.parse), testOnly);
+  }
+
   const columns = await safeQuery(`
     SELECT c.relname AS table_name, a.attname AS column_name,
            pg_catalog.format_type(a.atttypid, a.atttypmod) AS data_type,
@@ -468,7 +1000,7 @@ async function inspectExistingSchema(sql, { testOnly = false } = {}) {
     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
     JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid
     LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = c.oid AND d.adnum = a.attnum
-    WHERE n.nspname = 'public' AND c.relname IN (${EXPECTED_TABLES.map(quoteLiteral).join(', ')})
+    WHERE n.nspname = 'public' AND c.relname IN (${expectedTableNames.map(quoteLiteral).join(', ')})
       AND c.relkind = 'r' AND a.attnum > 0 AND NOT a.attisdropped
   `);
   const actualColumns = new Map(columns.map((column) => [
@@ -508,7 +1040,8 @@ async function inspectExistingSchema(sql, { testOnly = false } = {}) {
     JOIN pg_catalog.pg_class rel ON rel.oid = con.conrelid
     JOIN pg_catalog.pg_namespace ns ON ns.oid = rel.relnamespace
     LEFT JOIN pg_catalog.pg_class ref ON ref.oid = con.confrelid
-    WHERE ns.nspname = 'public' AND rel.relname IN (${EXPECTED_TABLES.map(quoteLiteral).join(', ')})
+    WHERE ns.nspname = 'public' AND rel.relname IN (${expectedTableNames.map(quoteLiteral).join(', ')})
+      AND con.contype <> 'n'
   `);
   const actualConstraintKeys = constraints.map((row) => {
     const item = {
@@ -544,7 +1077,7 @@ async function inspectExistingSchema(sql, { testOnly = false } = {}) {
     JOIN pg_catalog.pg_class tbl ON tbl.oid = i.indrelid
     JOIN pg_catalog.pg_namespace ns ON ns.oid = tbl.relnamespace
     JOIN pg_catalog.pg_am am ON am.oid = idx.relam
-    WHERE ns.nspname = 'public' AND tbl.relname IN (${EXPECTED_TABLES.map(quoteLiteral).join(', ')})
+    WHERE ns.nspname = 'public' AND tbl.relname IN (${expectedTableNames.map(quoteLiteral).join(', ')})
   `);
   const actualIndexes = indexes.map((row) => JSON.stringify({
     name: row.index_name, table: row.table_name, columns: row.columns || [], unique: row.is_unique,
@@ -561,6 +1094,122 @@ async function inspectExistingSchema(sql, { testOnly = false } = {}) {
   if (JSON.stringify(actualIndexes) !== JSON.stringify(expectedIndexes)) {
     throwSchemaMismatch('indexes', expectedIndexes.map(JSON.parse), actualIndexes.map(JSON.parse), testOnly);
   }
+
+  const triggers = await safeQuery(`
+    SELECT tbl.relname AS table_name, t.tgname AS trigger_name,
+           t.tgenabled AS enabled, pg_catalog.pg_get_triggerdef(t.oid, true) AS definition,
+           proc.proname AS function_name, proc.prosrc AS function_source
+    FROM pg_catalog.pg_trigger t
+    JOIN pg_catalog.pg_class tbl ON tbl.oid = t.tgrelid
+    JOIN pg_catalog.pg_namespace ns ON ns.oid = tbl.relnamespace
+    JOIN pg_catalog.pg_proc proc ON proc.oid = t.tgfoid
+    WHERE ns.nspname = 'public' AND tbl.relname IN (${expectedTableNames.map(quoteLiteral).join(', ')})
+      AND NOT t.tgisinternal
+  `);
+  const actualTriggers = triggers.map((trigger) => ({
+    table: trigger.table_name,
+    name: trigger.trigger_name,
+    enabled: trigger.enabled,
+    definition: normalizeDefinition(trigger.definition),
+    functionName: trigger.function_name,
+    functionSource: normalizeFunctionSource(trigger.function_source)
+  })).sort((left, right) => left.name.localeCompare(right.name));
+  const expectedTriggers = expected.triggers.map((trigger) => ({
+    ...trigger,
+    functionSource: normalizeFunctionSource(trigger.functionSource),
+    definition: normalizeDefinition(trigger.definition)
+  })).sort((left, right) => left.name.localeCompare(right.name));
+  if (JSON.stringify(actualTriggers) !== JSON.stringify(expectedTriggers)) {
+    throwSchemaMismatch('triggers', expectedTriggers, actualTriggers, testOnly);
+  }
+
+  const functions = expected.functions.length
+    ? await safeQuery(`
+      SELECT p.proname AS function_name,
+             pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments,
+             pg_catalog.format_type(p.prorettype, NULL) AS return_type,
+             language.lanname AS language,
+             p.prosecdef AS security_definer,
+             p.prosrc AS function_source,
+             EXISTS (
+               SELECT 1
+               FROM pg_catalog.aclexplode(
+                 COALESCE(p.proacl, pg_catalog.acldefault('f', p.proowner))
+               ) permission
+               WHERE permission.grantee = 0
+                 AND permission.privilege_type = 'EXECUTE'
+             ) AS public_execute,
+             ARRAY(
+               SELECT CASE WHEN permission.grantee = 0 THEN 'PUBLIC'
+                           ELSE pg_catalog.pg_get_userbyid(permission.grantee) END
+                      || ':' || permission.privilege_type
+                      || ':' || permission.is_grantable::text
+               FROM pg_catalog.aclexplode(
+                 COALESCE(p.proacl, pg_catalog.acldefault('f', p.proowner))
+               ) permission
+               WHERE permission.grantee <> p.proowner
+               ORDER BY permission.grantee, permission.privilege_type
+             ) AS other_privileges
+      FROM pg_catalog.pg_proc p
+      JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+      JOIN pg_catalog.pg_language language ON language.oid = p.prolang
+      WHERE n.nspname = 'public'
+        AND p.proname IN (${expected.functions.map(({ name }) => quoteLiteral(name)).join(', ')})
+    `)
+    : [];
+  const actualFunctions = functions.map((row) => ({
+    name: row.function_name,
+    identityArguments: row.identity_arguments,
+    returnType: row.return_type,
+    language: row.language,
+    securityDefiner: row.security_definer,
+    publicExecute: row.public_execute,
+    otherPrivileges: row.other_privileges,
+    source: normalizeFunctionSource(row.function_source)
+  })).sort((left, right) => left.name.localeCompare(right.name));
+  const expectedFunctions = expected.functions.map((item) => ({
+    ...item,
+    source: normalizeFunctionSource(item.source)
+  })).sort((left, right) => left.name.localeCompare(right.name));
+  if (JSON.stringify(actualFunctions) !== JSON.stringify(expectedFunctions)) {
+    throwSchemaMismatch('functions', expectedFunctions, actualFunctions, testOnly);
+  }
+
+  const policies = await safeQuery(`
+    SELECT tbl.relname AS table_name, p.polname AS policy_name, p.polcmd AS command,
+           p.polpermissive AS permissive, p.polroles AS role_ids,
+           pg_catalog.pg_get_expr(p.polqual, p.polrelid, true) AS using_expression,
+           pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid, true) AS check_expression
+    FROM pg_catalog.pg_policy p
+    JOIN pg_catalog.pg_class tbl ON tbl.oid = p.polrelid
+    JOIN pg_catalog.pg_namespace ns ON ns.oid = tbl.relnamespace
+    WHERE ns.nspname = 'public' AND tbl.relname IN (${expectedTableNames.map(quoteLiteral).join(', ')})
+  `);
+  if (policies.length) throwSchemaMismatch('row-level security policies', [], policies, testOnly);
+
+  const privileges = await safeQuery(`
+    SELECT tbl.relname AS table_name, NULL::text AS column_name,
+           CASE WHEN acl.grantee = 0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(acl.grantee) END AS grantee,
+           acl.privilege_type, acl.is_grantable
+    FROM pg_catalog.pg_class tbl
+    JOIN pg_catalog.pg_namespace ns ON ns.oid = tbl.relnamespace
+    CROSS JOIN LATERAL pg_catalog.aclexplode(
+      COALESCE(tbl.relacl, pg_catalog.acldefault('r', tbl.relowner))
+    ) acl
+    WHERE ns.nspname = 'public' AND tbl.relname IN (${expectedTableNames.map(quoteLiteral).join(', ')})
+      AND acl.grantee <> tbl.relowner
+    UNION ALL
+    SELECT tbl.relname AS table_name, att.attname AS column_name,
+           CASE WHEN acl.grantee = 0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(acl.grantee) END AS grantee,
+           acl.privilege_type, acl.is_grantable
+    FROM pg_catalog.pg_attribute att
+    JOIN pg_catalog.pg_class tbl ON tbl.oid = att.attrelid
+    JOIN pg_catalog.pg_namespace ns ON ns.oid = tbl.relnamespace
+    CROSS JOIN LATERAL pg_catalog.aclexplode(att.attacl) acl
+    WHERE ns.nspname = 'public' AND tbl.relname IN (${expectedTableNames.map(quoteLiteral).join(', ')})
+      AND att.attnum > 0 AND NOT att.attisdropped AND acl.grantee <> tbl.relowner
+  `);
+  if (privileges.length) throwSchemaMismatch('table and column privileges', [], privileges, testOnly);
 }
 
 function historyValidationBlock(migrations, adoptExisting = false) {
@@ -596,7 +1245,7 @@ function historyValidationBlock(migrations, adoptExisting = false) {
            WHERE n.nspname = 'public' AND c.relname = 'schema_migrations' AND con.contype = 'c') <> 1
        OR EXISTS (SELECT 1 FROM pg_catalog.pg_constraint con
            JOIN pg_catalog.pg_class c ON c.oid = con.conrelid JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-           WHERE n.nspname = 'public' AND c.relname = 'schema_migrations' AND con.contype NOT IN ('p', 'c'))
+           WHERE n.nspname = 'public' AND c.relname = 'schema_migrations' AND con.contype NOT IN ('p', 'c', 'n'))
        OR EXISTS (SELECT 1 FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class c ON c.oid = i.indrelid
            JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
            WHERE n.nspname = 'public' AND c.relname = 'schema_migrations' AND NOT i.indisprimary)
@@ -654,6 +1303,59 @@ function historyTableDefinition() {
     checksum TEXT NOT NULL CHECK (checksum ~ '^[a-f0-9]{64}$'),
     applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`;
+}
+
+function historyIntegrityValidationStatement(migrations) {
+  const names = `ARRAY[${migrations.map(({ filename }) => quoteLiteral(filename)).join(', ')}]::text[]`;
+  const checksums = `ARRAY[${migrations.map(({ checksum }) => quoteLiteral(checksum)).join(', ')}]::text[]`;
+  return `DO $cybanext_history_integrity$
+  DECLARE expected_names text[] := ${names}; expected_checksums text[] := ${checksums};
+          idx integer; recorded_checksum text; recorded_count integer;
+  BEGIN
+    SELECT count(*) INTO recorded_count FROM public.schema_migrations;
+    IF recorded_count <> cardinality(expected_names) THEN
+      RAISE EXCEPTION 'migration history records';
+    END IF;
+    FOR idx IN 1..cardinality(expected_names) LOOP
+      SELECT checksum INTO recorded_checksum
+      FROM public.schema_migrations
+      WHERE filename = expected_names[idx];
+      IF NOT FOUND OR recorded_checksum <> expected_checksums[idx] THEN
+        RAISE EXCEPTION 'migration history records';
+      END IF;
+    END LOOP;
+    IF EXISTS (
+      SELECT 1 FROM pg_catalog.pg_trigger
+      WHERE tgrelid = 'public.schema_migrations'::regclass AND NOT tgisinternal
+    ) THEN RAISE EXCEPTION 'migration history triggers'; END IF;
+    IF EXISTS (
+      SELECT 1 FROM pg_catalog.pg_class tbl
+      JOIN pg_catalog.pg_namespace ns ON ns.oid = tbl.relnamespace
+      WHERE ns.nspname = 'public' AND tbl.relname = 'schema_migrations'
+        AND (tbl.relrowsecurity OR tbl.relforcerowsecurity)
+    ) OR EXISTS (
+      SELECT 1 FROM pg_catalog.pg_policy policy
+      JOIN pg_catalog.pg_class tbl ON tbl.oid = policy.polrelid
+      JOIN pg_catalog.pg_namespace ns ON ns.oid = tbl.relnamespace
+      WHERE ns.nspname = 'public' AND tbl.relname = 'schema_migrations'
+    ) THEN RAISE EXCEPTION 'migration history row-level security'; END IF;
+    IF EXISTS (
+      SELECT 1 FROM pg_catalog.pg_class tbl
+      JOIN pg_catalog.pg_namespace ns ON ns.oid = tbl.relnamespace
+      CROSS JOIN LATERAL pg_catalog.aclexplode(
+        COALESCE(tbl.relacl, pg_catalog.acldefault('r', tbl.relowner))
+      ) acl
+      WHERE ns.nspname = 'public' AND tbl.relname = 'schema_migrations'
+        AND acl.grantee <> tbl.relowner
+    ) OR EXISTS (
+      SELECT 1 FROM pg_catalog.pg_attribute att
+      JOIN pg_catalog.pg_class tbl ON tbl.oid = att.attrelid
+      JOIN pg_catalog.pg_namespace ns ON ns.oid = tbl.relnamespace
+      CROSS JOIN LATERAL pg_catalog.aclexplode(att.attacl) acl
+      WHERE ns.nspname = 'public' AND tbl.relname = 'schema_migrations'
+        AND att.attnum > 0 AND NOT att.attisdropped AND acl.grantee <> tbl.relowner
+    ) THEN RAISE EXCEPTION 'migration history privileges'; END IF;
+  END $cybanext_history_integrity$`;
 }
 
 function advisoryLockStatement() {
@@ -717,7 +1419,7 @@ function historyStructureValidationStatement(testOnly = false) {
          JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname='schema_migrations' AND con.contype='c') <> 1
     THEN ${raise('checksum constraint')} END IF;
     IF EXISTS (SELECT 1 FROM pg_catalog.pg_constraint con JOIN pg_catalog.pg_class c ON c.oid=con.conrelid
-         JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname='schema_migrations' AND con.contype NOT IN ('p','c'))
+         JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname='schema_migrations' AND con.contype NOT IN ('p','c','n'))
     THEN ${raise('unexpected constraint')} END IF;
     IF EXISTS (SELECT 1 FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class c ON c.oid=i.indrelid
          JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname='schema_migrations' AND NOT i.indisprimary)
@@ -815,21 +1517,81 @@ async function runMigrations(options = {}) {
     logger.log(testOnly ? 'Verified loopback PostgreSQL test target.' : `Verified ${target} endpoint host and ${EXPECTED_DATABASE} database name.`);
 
     if (adoptExisting) {
+      let upgradedLegacySchema = false;
       try {
         await sql.withTransaction(async (tx) => {
           await tx.query(advisoryLockStatement());
-          await inspectExistingSchema(tx, { testOnly });
+          try {
+            await inspectExistingSchema(tx, { testOnly });
+          } catch (currentSchemaError) {
+            const existingObjects = await tx.query(`
+              SELECT relname AS object_name
+              FROM pg_catalog.pg_class
+              JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_class.relnamespace
+              WHERE pg_catalog.pg_namespace.nspname = 'public'
+                AND relname IN (${[
+                  ...REGULAR_TRACK_OBJECTS,
+                  'email_notification_outbox',
+                  'sms_consent_events',
+                  'sms_notification_outbox'
+                ].map(quoteLiteral).join(', ')})
+            `);
+            const existingNames = new Set(existingObjects.map(({ object_name }) => object_name));
+            if (existingNames.has('sms_notification_outbox')) {
+              throw currentSchemaError;
+            }
+
+            const hasRegularTrackObjects = REGULAR_TRACK_OBJECTS.some((name) =>
+              existingNames.has(name));
+            const hasEmailOutbox = existingNames.has('email_notification_outbox');
+            const hasSmsConsent = existingNames.has('sms_consent_events');
+            await inspectExistingSchema(tx, {
+              testOnly,
+              includeRegularTrack: hasRegularTrackObjects,
+              includeEmailOutbox: hasEmailOutbox,
+              includePaymentFailed: hasEmailOutbox,
+              includeSmsConsent: hasSmsConsent,
+              includeSmsOutbox: false
+            });
+
+            const migrationsToApply = [
+              ['regular_track_applicants', '003_create_regular_track_payment_records.sql'],
+              ['email_notification_outbox', '004_create_email_notification_outbox.sql'],
+              ['sms_consent_events', '005_create_sms_consent_events.sql'],
+              ['sms_notification_outbox', '006_create_sms_notification_outbox.sql']
+            ];
+            for (const [objectName, filename] of migrationsToApply) {
+              if (existingNames.has(objectName)) continue;
+              const migration = migrations.find((item) => item.filename === filename);
+              if (!migration) throw currentSchemaError;
+              for (const statement of migration.statements) {
+                await tx.query(statement);
+              }
+            }
+            await inspectExistingSchema(tx, { testOnly });
+            upgradedLegacySchema = true;
+          }
           await tx.query(historyTableDefinition());
           await tx.query(historyStructureValidationStatement(testOnly));
           await tx.query('SELECT filename, checksum FROM public.schema_migrations');
           await tx.query(historyValidationBlock(migrations, true));
+          await tx.query(historyIntegrityValidationStatement(migrations));
         });
       } catch (error) {
         reportTestDatabaseDiagnostic(error, { ...options, testOnly });
-        throw new Error('Development schema adoption failed; no raw database details are available.');
+        const category = safeSchemaMismatchCategory(error);
+        const mismatch = category ? ` (schema mismatch: ${category})` : '';
+        throw new Error(`Development schema adoption failed${mismatch}; no raw database details are available.`);
       }
-      logger.log('Existing development schema verified and adopted; migration DDL was not rerun.');
-      return { applied: true, adopted: true, migrations: migrations.map(({ filename }) => filename) };
+      logger.log(upgradedLegacySchema
+        ? 'Exact pre-notification development schema upgraded and adopted transactionally.'
+        : 'Existing development schema verified and adopted; migration DDL was not rerun.');
+      return {
+        applied: true,
+        adopted: true,
+        upgradedLegacySchema,
+        migrations: migrations.map(({ filename }) => filename)
+      };
     }
 
     try {
@@ -839,12 +1601,16 @@ async function runMigrations(options = {}) {
         await tx.query(historyStructureValidationStatement(testOnly));
         await tx.query('SELECT filename, checksum FROM public.schema_migrations');
         await tx.query(historyValidationBlock(migrations, false));
+        await tx.query(historyIntegrityValidationStatement(migrations));
+        await inspectExistingSchema(tx, { testOnly });
       });
     } catch (error) {
       reportTestDatabaseDiagnostic(error, { ...options, testOnly });
       const code = error && typeof error.code === 'string' && /^[0-9A-Z]{5}$/.test(error.code) ? error.code : 'unknown';
-      logger.error(`Migration transaction failed; no raw database details are available (code: ${code}).`);
-      throw Object.assign(new Error('Migration operation failed.'), { safeMigrationError: true, code });
+      const category = safeSchemaMismatchCategory(error);
+      const mismatch = category ? ` (schema mismatch: ${category})` : '';
+      logger.error(`Migration transaction failed${mismatch}; no raw database details are available (code: ${code}).`);
+      throw Object.assign(new Error(`Migration operation failed${mismatch}.`), { safeMigrationError: true, code, schemaMismatchCategory: category });
     }
     logger.log('All listed migrations completed or were already applied with matching checksums.');
     return { applied: true, migrations: migrations.map(({ filename }) => filename) };
@@ -861,9 +1627,11 @@ function validateLoopbackTestTarget(connectionUrl) {
   let parsed;
   try { parsed = new URL(connectionUrl); } catch { throw new Error('Test database URL is invalid.'); }
   const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  const hasHostOverride = [...parsed.searchParams.keys()].some((parameter) =>
+    ['host', 'hostaddr'].includes(parameter.toLowerCase()));
   if (!['postgres:', 'postgresql:'].includes(parsed.protocol) ||
       !['localhost', '127.0.0.1', '::1'].includes(host) ||
-      parsed.searchParams.has('host') || parsed.searchParams.has('hostaddr') ||
+      hasHostOverride ||
       parsed.username === '' || parsed.password === '' || parsed.pathname.length < 2) {
     throw new Error('Test database must use an explicit loopback PostgreSQL URL with credentials and a database name.');
   }
@@ -903,7 +1671,9 @@ async function runTestMigrations(options = {}) {
 
 function sanitizeError(error) {
   const code = error && typeof error.code === 'string' && /^[0-9A-Z]{5}$/.test(error.code) ? error.code : 'unknown';
-  return `Migration operation failed. (code: ${code})`;
+  const category = safeSchemaMismatchCategory(error);
+  const mismatch = category ? ` (schema mismatch: ${category})` : '';
+  return `Migration operation failed${mismatch}. (code: ${code})`;
 }
 
 if (require.main === module) {
@@ -919,6 +1689,7 @@ module.exports = {
   MIGRATION_FILES,
   expectedSchema,
   historyValidationBlock,
+  historyIntegrityValidationStatement,
   inspectExistingSchema,
   loadMigrations,
   parseArguments,

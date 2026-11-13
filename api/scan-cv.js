@@ -2,7 +2,7 @@ const { formidable } = require('formidable');
 const fs = require('fs');
 const pdfParse = require('pdf-parse');
 const mammoth = require('mammoth');
-const { scanText } = require('./keywords');
+const { scanText } = require('../lib/keywords');
 const { getPaymentPrice } = require('../lib/payment-prices');
 const { createQualificationToken } = require('../lib/qualification-token');
 

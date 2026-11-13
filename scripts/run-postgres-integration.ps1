@@ -1,18 +1,31 @@
 [CmdletBinding()]
 param(
   [switch]$KeepContainer,
-  [string]$TestNamePattern
+  [string]$TestNamePattern,
+  [ValidateSet('16', '18')]
+  [string]$PostgresMajorVersion = '16'
 )
 
 $ErrorActionPreference = 'Stop'
-$image = 'postgres:16-alpine'
+$image = "postgres:$PostgresMajorVersion-alpine"
 $labelKey = 'cybanext.migration-integration'
 $labelValue = [guid]::NewGuid().ToString('N')
+$harnessToken = $null
+$harnessId = $labelValue
 $containerName = "cybanext-pg-test-$labelValue"
 $containerId = $null
 $testExitCode = 1
 $savedEnvironment = @{}
-foreach ($name in @('CYBANEXT_TEST_DATABASE_URL', 'CYBANEXT_RUN_POSTGRES_INTEGRATION', 'PGPASSWORD', 'NODE_PATH')) {
+foreach ($name in @(
+    'CYBANEXT_TEST_DATABASE_URL',
+    'CYBANEXT_RUN_POSTGRES_INTEGRATION',
+    'CYBANEXT_TEST_HARNESS_TOKEN',
+    'CYBANEXT_TEST_HARNESS_ID',
+    'CYBANEXT_TEST_CONTAINER_ID',
+    'CYBANEXT_TEST_POSTGRES_MAJOR_VERSION',
+    'PGPASSWORD',
+    'NODE_PATH'
+  )) {
   $exists = Test-Path "Env:$name"
   $savedEnvironment[$name] = [pscustomobject]@{ Exists = $exists; Value = if ($exists) { [Environment]::GetEnvironmentVariable($name, 'Process') } else { $null } }
 }
@@ -25,6 +38,8 @@ function New-RandomSecret([int]$Length = 32) {
   return [Convert]::ToBase64String($bytes).Replace('+','A').Replace('/','B').Replace('=','')
 }
 
+$harnessToken = New-RandomSecret 36
+
 try {
   $serverVersion = docker info --format '{{.ServerVersion}}'
   if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($serverVersion)) { throw 'Docker Engine is not responsive.' }
@@ -32,11 +47,16 @@ try {
 
   $dbUser = "u$(New-RandomSecret 18)"
   $dbPassword = New-RandomSecret 36
-  $dbName = "d$(New-RandomSecret 18)"
+  $dbName = "d$(New-RandomSecret 18)".ToLowerInvariant()
   $env:CYBANEXT_RUN_POSTGRES_INTEGRATION = '1'
+  $env:CYBANEXT_TEST_HARNESS_TOKEN = $harnessToken
+  $env:CYBANEXT_TEST_HARNESS_ID = $harnessId
+  $env:CYBANEXT_TEST_POSTGRES_MAJOR_VERSION = $PostgresMajorVersion
 
   $containerId = docker run --detach --name $containerName --label "$labelKey=$labelValue" --publish '127.0.0.1::5432' --env "POSTGRES_USER=$dbUser" --env "POSTGRES_PASSWORD=$dbPassword" --env "POSTGRES_DB=$dbName" $image
   if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($containerId)) { throw 'Could not start the disposable PostgreSQL container.' }
+  $containerId = $containerId.Trim()
+  $env:CYBANEXT_TEST_CONTAINER_ID = $containerId
 
   $published = $null
   for ($attempt = 0; $attempt -lt 60; $attempt++) {
@@ -59,7 +79,7 @@ try {
     if ($readinessExitCode -eq 0) {
       $databaseVersion = docker exec --env "PGPASSWORD=$dbPassword" --env 'PGCONNECT_TIMEOUT=3' $containerId psql --host 127.0.0.1 --port 5432 --username $dbUser --dbname $dbName --tuples-only --no-align --command "SELECT current_database() || '|' || current_setting('server_version')" 2>$null
       $sqlExitCode = $LASTEXITCODE
-      if ($sqlExitCode -eq 0 -and $databaseVersion -match "^$([regex]::Escape($dbName))\|16\.") {
+      if ($sqlExitCode -eq 0 -and $databaseVersion -match "^$([regex]::Escape($dbName))\|$([regex]::Escape($PostgresMajorVersion))\.") {
         $pgVersion = ($databaseVersion -split '\|', 2)[1]
         $ready = $true
         break
@@ -69,6 +89,12 @@ try {
   }
   if (-not $ready) { throw 'Disposable PostgreSQL did not accept a successful TCP SQL/version query within 90 seconds.' }
   Write-Host "PostgreSQL $pgVersion on 127.0.0.1:$port"
+
+  $escapedDatabaseName = $dbName.Replace('"', '""')
+  $escapedHarnessToken = $harnessToken.Replace("'", "''")
+  $markerCommand = "COMMENT ON DATABASE `"$escapedDatabaseName`" IS '$escapedHarnessToken';"
+  docker exec --env "PGPASSWORD=$dbPassword" --env 'PGCONNECT_TIMEOUT=3' $containerId psql --host 127.0.0.1 --port 5432 --username $dbUser --dbname postgres --no-psqlrc --set=ON_ERROR_STOP=1 --command $markerCommand *> $null
+  if ($LASTEXITCODE -ne 0) { throw 'Could not mark the disposable PostgreSQL database for integration-test authorization.' }
 
   $npmPackageRoot = npm.cmd exec --yes --package=pg -- node -e "const p=process.env.PATH.split(';').find(x=>x.toLowerCase().includes('_npx')&&x.toLowerCase().endsWith('\\node_modules\\.bin')); if(p) process.stdout.write(p.slice(0,-5))"
   if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($npmPackageRoot)) { throw 'Could not resolve the temporary pg package directory from npm exec.' }

@@ -16,7 +16,8 @@ test('Digital Forensics registration is saved before returning checkout details'
   const result = await registerDigitalForensicsApplicant({
     fullName: registration.fullName,
     email: registration.email,
-    phone: registration.phone
+    phone: registration.phone,
+    smsConsent: true
   }, {
     fetchRequest: async (url, options) => {
       request = { url, options };
@@ -38,7 +39,8 @@ test('Digital Forensics registration is saved before returning checkout details'
   assert.deepEqual(JSON.parse(request.options.body), {
     fullName: 'Test Applicant',
     email: 'applicant@example.com',
-    phone: '+233201234567'
+    phone: '+233201234567',
+    smsConsent: true
   });
   assert.equal(result.registrationId, 'DF-123');
   assert.deepEqual(Object.fromEntries(values), {

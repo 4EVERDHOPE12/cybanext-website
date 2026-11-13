@@ -240,6 +240,7 @@ if (applicationForm) {
     const fullName = document.getElementById('fullName');
     const email = document.getElementById('email');
     const phone = document.getElementById('phone');
+    const smsConsent = document.getElementById('smsConsent');
     const track = document.getElementById('track');
     const reason = document.getElementById('reason');
     sessionStorage.removeItem('qualificationToken');
@@ -287,6 +288,15 @@ if (applicationForm) {
     if (!email.validity.valid || !email.value.trim()) {
       showStatus('Please enter a valid email address.', 'error');
       email.focus();
+      return;
+    }
+
+    if (smsConsent && smsConsent.checked && (!phone || !phone.value.trim())) {
+      showStatus(
+        'Enter a valid Ghanaian phone number to consent to SMS notifications.',
+        'error'
+      );
+      if (phone) phone.focus();
       return;
     }
 
@@ -456,6 +466,7 @@ if (applicationForm) {
 
       const applicationData = new FormData(applicationForm);
       applicationData.delete('cv');
+      applicationData.delete('smsConsent');
 
       const formspreeResponse = await fetch(
         applicationForm.action,
@@ -523,6 +534,41 @@ if (applicationForm) {
         scanResult.qualificationToken
       );
 
+      if (track.value !== 'digital_forensics') {
+        const registrationResponse = await fetch(
+          '/api/create-regular-track-registration',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              fullName: fullName.value.trim(),
+              email: email.value.trim(),
+              phone: phone ? phone.value.trim() : '',
+              smsConsent: Boolean(smsConsent && smsConsent.checked),
+              qualificationToken: scanResult.qualificationToken
+            })
+          }
+        );
+        const registrationResult = await registrationResponse.json();
+
+        if (
+          !registrationResponse.ok ||
+          !registrationResult.registrationId
+        ) {
+          throw new Error(
+            registrationResult.error ||
+            'We could not save your internship registration. Please try again.'
+          );
+        }
+
+        sessionStorage.setItem(
+          'regularTrackRegistrationId',
+          registrationResult.registrationId
+        );
+      }
+
       /* -----------------------------------------
          STEP 5: SEND QUALIFIED APPLICANT TO PAYMENT
          ----------------------------------------- */
@@ -536,7 +582,9 @@ if (applicationForm) {
         await registerDigitalForensicsApplicant({
           fullName: fullName.value.trim(),
           email: email.value.trim(),
-          phone: phone ? phone.value.trim() : ''
+          phone: phone ? phone.value.trim() : '',
+          smsConsent: Boolean(smsConsent && smsConsent.checked),
+          consentSource: 'main_application'
         });
 
         showStatus(
@@ -561,7 +609,8 @@ if (applicationForm) {
           body: JSON.stringify({
             email: email.value.trim(),
             track: track.value,
-            qualificationToken: scanResult.qualificationToken
+            qualificationToken: scanResult.qualificationToken,
+            registrationId: sessionStorage.getItem('regularTrackRegistrationId')
           })
         });
         const paymentResult = await paymentResponse.json();
