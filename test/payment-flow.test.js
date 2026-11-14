@@ -17,6 +17,9 @@ const {
   createQualificationToken,
   verifyQualificationToken
 } = require('../lib/qualification-token');
+const {
+  getPaystackSecretKeyMode
+} = require('../lib/paystack-secret-key');
 const initializePayment = require('../api/initialize-payment');
 const initializeDigitalForensicsPayment =
   require('../api/initialize-digital-forensics-payment');
@@ -922,6 +925,23 @@ test('qualification tokens can use the configured Paystack TEST key as a fallbac
   }
 });
 
+test('qualification tokens require a separate secret when using a Paystack LIVE key', () => {
+  const configuredTokenSecret = process.env.QUALIFICATION_TOKEN_SECRET;
+  const configuredPaystackSecret = process.env.PAYSTACK_SECRET_KEY;
+  delete process.env.QUALIFICATION_TOKEN_SECRET;
+  process.env.PAYSTACK_SECRET_KEY = ['sk', 'live', 'unit_test_key'].join('_');
+
+  try {
+    assert.throws(
+      () => createApplicantToken(),
+      /Set QUALIFICATION_TOKEN_SECRET/
+    );
+  } finally {
+    process.env.QUALIFICATION_TOKEN_SECRET = configuredTokenSecret;
+    process.env.PAYSTACK_SECRET_KEY = configuredPaystackSecret;
+  }
+});
+
 test('regular payment initialization ignores client price and currency', async (t) => {
   const { applicants } = withFakeDigitalForensicsDatabase(t);
   const regularStore = require('../lib/regular-track-payment-store');
@@ -941,20 +961,29 @@ test('regular payment initialization ignores client price and currency', async (
   }));
   const response = createResponse();
 
-  await initializePayment({
-    method: 'POST',
-    body: {
-      email: 'applicant@example.com',
-      track: 'incident_response',
-      registrationId: applicant.id,
-      qualificationToken: createApplicantToken(),
-      amount: 1,
-      currency: 'USD',
-      price: 1
-    }
-  }, response);
+  const configuredKey = process.env.PAYSTACK_SECRET_KEY;
+  const liveKey = ['sk', 'live', 'unit_test_key'].join('_');
+  process.env.PAYSTACK_SECRET_KEY = liveKey;
+
+  try {
+    await initializePayment({
+      method: 'POST',
+      body: {
+        email: 'applicant@example.com',
+        track: 'incident_response',
+        registrationId: applicant.id,
+        qualificationToken: createApplicantToken(),
+        amount: 1,
+        currency: 'USD',
+        price: 1
+      }
+    }, response);
+  } finally {
+    process.env.PAYSTACK_SECRET_KEY = configuredKey;
+  }
 
   assert.equal(response.statusCode, 200);
+  assert.equal(paystack.options.headers.Authorization, `Bearer ${liveKey}`);
   assert.equal(paystack.body.amount, 34650);
   assert.equal(paystack.body.currency, 'GHS');
   assert.deepEqual(paystack.body.channels, ['card', 'mobile_money']);
@@ -982,24 +1011,94 @@ test('payment initialization rejects absent or mismatched qualification', async 
   assert.equal(mismatchedResponse.statusCode, 403);
 });
 
-test('payment initialization requires a TEST key and refuses live keys', async () => {
+test('Paystack secret-key mode accepts only valid TEST and LIVE formats', () => {
+  assert.equal(
+    getPaystackSecretKeyMode(['sk', 'test', 'unit_test_key'].join('_')),
+    'test'
+  );
+  assert.equal(
+    getPaystackSecretKeyMode(['sk', 'live', 'unit_test_key'].join('_')),
+    'live'
+  );
+
+  for (const secretKey of [
+    undefined,
+    null,
+    '',
+    'sk_test_',
+    'sk_live_',
+    'pk_test_unit_test_key',
+    'sk_staging_unit_test_key',
+    ' sk_live_unit_test_key',
+    'sk_live_unit_test_key ',
+    'sk_live_unit_test_key\n'
+  ]) {
+    assert.equal(getPaystackSecretKeyMode(secretKey), null);
+  }
+});
+
+test('payment handlers accept TEST and LIVE keys and fail closed for invalid configuration', async (t) => {
   const configuredKey = process.env.PAYSTACK_SECRET_KEY;
-  process.env.PAYSTACK_SECRET_KEY = ['sk', 'live', 'unsupported'].join('_');
-  const response = createResponse();
+  const originalConsoleError = console.error;
+  console.error = () => {};
+  t.after(() => {
+    console.error = originalConsoleError;
+  });
 
   try {
-    await initializePayment({
-      method: 'POST',
-      body: {
-        track: 'incident_response',
-        qualificationToken: createApplicantToken()
+    for (const mode of ['test', 'live']) {
+      process.env.PAYSTACK_SECRET_KEY =
+        ['sk', mode, 'unit_test_key'].join('_');
+
+      const regularResponse = createResponse();
+      await initializePayment({
+        method: 'POST',
+        body: {}
+      }, regularResponse);
+      assert.equal(regularResponse.statusCode, 403);
+
+      const digitalForensicsResponse = createResponse();
+      await initializeDigitalForensicsPayment({
+        method: 'POST',
+        body: {}
+      }, digitalForensicsResponse);
+      assert.equal(digitalForensicsResponse.statusCode, 400);
+
+      const verificationResponse = createResponse();
+      await verifyPayment({
+        method: 'POST',
+        body: {}
+      }, verificationResponse);
+      assert.equal(verificationResponse.statusCode, 400);
+    }
+
+    for (const secretKey of [
+      undefined,
+      '',
+      'sk_test_',
+      'sk_live_',
+      'pk_live_unit_test_key',
+      'sk_staging_unit_test_key'
+    ]) {
+      if (secretKey === undefined) {
+        delete process.env.PAYSTACK_SECRET_KEY;
+      } else {
+        process.env.PAYSTACK_SECRET_KEY = secretKey;
       }
-    }, response);
+
+      for (const handler of [
+        initializePayment,
+        initializeDigitalForensicsPayment,
+        verifyPayment
+      ]) {
+        const response = createResponse();
+        await handler({ method: 'POST', body: {} }, response);
+        assert.equal(response.statusCode, 500);
+      }
+    }
   } finally {
     process.env.PAYSTACK_SECRET_KEY = configuredKey;
   }
-
-  assert.equal(response.statusCode, 500);
 });
 
 test('Digital Forensics endpoint selects local or reference price server-side', async (t) => {
@@ -1118,16 +1217,25 @@ test('Digital Forensics local option initializes exactly GH₵1,200 in GHS pesew
     phone: '+233201234568'
   });
 
-  await initializeDigitalForensicsPayment({
-    method: 'POST',
-    body: {
-      registrationId: registration.id,
-      email: 'local@example.com',
-      pricingOption: 'GHS'
-    }
-  }, response);
+  const configuredKey = process.env.PAYSTACK_SECRET_KEY;
+  const liveKey = ['sk', 'live', 'unit_test_key'].join('_');
+  process.env.PAYSTACK_SECRET_KEY = liveKey;
+
+  try {
+    await initializeDigitalForensicsPayment({
+      method: 'POST',
+      body: {
+        registrationId: registration.id,
+        email: 'local@example.com',
+        pricingOption: 'GHS'
+      }
+    }, response);
+  } finally {
+    process.env.PAYSTACK_SECRET_KEY = configuredKey;
+  }
 
   assert.equal(response.statusCode, 200);
+  assert.equal(paystack.options.headers.Authorization, `Bearer ${liveKey}`);
   assert.equal(paystack.body.amount, 120000);
   assert.equal(paystack.body.currency, 'GHS');
   assert.equal(paystack.body.metadata.charge_amount_ghs, 1200);
@@ -1222,21 +1330,29 @@ test('confirmed Paystack rejection marks the attempt initialization_failed', asy
     phone: '+233201234567',
     track: 'incident_response'
   });
-  stubPaystackRequest(t, {
+  const paystack = stubPaystackRequest(t, {
     status: false,
     message: 'Invalid amount.'
   }, 400);
   const response = createResponse();
+  const configuredKey = process.env.PAYSTACK_SECRET_KEY;
+  const liveKey = ['sk', 'live', 'unit_test_key'].join('_');
+  process.env.PAYSTACK_SECRET_KEY = liveKey;
 
-  await initializePayment({
-    method: 'POST',
-    body: {
-      registrationId: applicant.id,
-      qualificationToken: createApplicantToken()
-    }
-  }, response);
+  try {
+    await initializePayment({
+      method: 'POST',
+      body: {
+        registrationId: applicant.id,
+        qualificationToken: createApplicantToken()
+      }
+    }, response);
+  } finally {
+    process.env.PAYSTACK_SECRET_KEY = configuredKey;
+  }
 
   assert.equal(response.statusCode, 502);
+  assert.equal(paystack.options.headers.Authorization, `Bearer ${liveKey}`);
   assert.equal(applicants.get(applicant.id).status, 'pending');
   assert.equal(attempts.size, 1);
   assert.equal([...attempts.values()][0].status, 'initialization_failed');
@@ -1357,12 +1473,21 @@ test('regular payment verification persists success and is idempotent', async (t
       qualification_token: createApplicantToken(applicant.track)
     }
   };
-  stubPaystackRequest(t, { status: true, data: transaction });
+  const paystack = stubPaystackRequest(t, { status: true, data: transaction });
   const response = createResponse();
 
-  await verifyPayment({ method: 'POST', body: { reference } }, response);
+  const configuredKey = process.env.PAYSTACK_SECRET_KEY;
+  const liveKey = ['sk', 'live', 'unit_test_key'].join('_');
+  process.env.PAYSTACK_SECRET_KEY = liveKey;
+
+  try {
+    await verifyPayment({ method: 'POST', body: { reference } }, response);
+  } finally {
+    process.env.PAYSTACK_SECRET_KEY = configuredKey;
+  }
 
   assert.equal(response.statusCode, 200);
+  assert.equal(paystack.options.headers.Authorization, `Bearer ${liveKey}`);
   assert.equal(response.body.verified, true);
   assert.equal(attempts.get(reference).status, 'payment_verified');
   assert.equal(
@@ -1429,6 +1554,49 @@ test('regular failed payment is persisted without affecting a verified attempt',
     'regular_track_payment_failure'
   );
 });
+
+for (const status of ['pending', 'unknown']) {
+  test(`verification rejects the ${status} Paystack status without marking paid`, async (t) => {
+    const { attempts, notifications, smsNotifications } =
+      withFakeDigitalForensicsDatabase(t);
+    const reference = `CYB-${status.toUpperCase()}-456789`;
+    const { applicant } = await createAwaitingRegularPayment(
+      'applicant@example.com',
+      reference
+    );
+    stubPaystackRequest(t, {
+      status: true,
+      data: {
+        id: 223355,
+        status,
+        reference,
+        currency: 'GHS',
+        amount: 34650,
+        customer: { email: applicant.email },
+        metadata: {
+          track: applicant.track,
+          pricing_option: 'USD_REFERENCE',
+          registration_id: applicant.id,
+          qualification_token: createApplicantToken(applicant.track)
+        }
+      }
+    });
+    const response = createResponse();
+
+    await verifyPayment({ method: 'POST', body: { reference } }, response);
+
+    assert.equal(response.statusCode, 400);
+    assert.equal(response.body.verified, false);
+    assert.equal(attempts.get(reference).status, 'payment_initiated');
+    assert.equal(
+      [...notifications.values()].some((notification) =>
+        notification.eventType === 'regular_track_payment_success'
+      ),
+      false
+    );
+    assert.equal(smsNotifications.size, 0);
+  });
+}
 
 test('a failed verification after successful payment cannot downgrade the attempt', async (t) => {
   const { attempts, notifications, smsNotifications } =

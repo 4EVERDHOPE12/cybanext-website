@@ -1,6 +1,7 @@
 const https = require('https');
 const { getPaymentPrice } = require('../lib/payment-prices');
 const { findRegistration, updateRegistration } = require('../lib/digital-forensics-store');
+const { getPaystackSecretKeyMode } = require('../lib/paystack-secret-key');
 
 function initializePaystackTransaction(data) {
   return new Promise((resolve, reject) => {
@@ -50,10 +51,10 @@ module.exports = async function handler(req, res) {
   }
 
   const secretKey = process.env.PAYSTACK_SECRET_KEY;
-  if (!secretKey || !secretKey.startsWith('sk_test_')) {
-    console.error('A Paystack TEST secret key is not configured.');
+  if (!getPaystackSecretKeyMode(secretKey)) {
+    console.error('A valid Paystack secret key is not configured.');
     return res.status(500).json({
-      error: 'Test payment service is not configured.'
+      error: 'Payment service is not configured.'
     });
   }
 

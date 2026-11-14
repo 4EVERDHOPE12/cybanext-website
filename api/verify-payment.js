@@ -1,6 +1,7 @@
 const https = require('https');
 const { getPaymentPrice } = require('../lib/payment-prices');
 const { verifyQualificationToken } = require('../lib/qualification-token');
+const { getPaystackSecretKeyMode } = require('../lib/paystack-secret-key');
 const {
   findRegistration,
   updatePaymentStatusWithNotification
@@ -69,11 +70,11 @@ module.exports = async (req, res) => {
 
   const secretKey = process.env.PAYSTACK_SECRET_KEY;
 
-  if (!secretKey || !secretKey.startsWith('sk_test_')) {
-    console.error('A Paystack TEST secret key is not configured.');
+  if (!getPaystackSecretKeyMode(secretKey)) {
+    console.error('A valid Paystack secret key is not configured.');
     return res.status(500).json({
       verified: false,
-      error: 'Test payment service is not configured.'
+      error: 'Payment service is not configured.'
     });
   }
 

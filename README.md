@@ -10,8 +10,8 @@ Paystack checkout uses GHS and pesewas for all transactions. Regular tracks use 
 
 Configure these server-side environment variables in the deployment environment:
 
-- `PAYSTACK_SECRET_KEY`: Paystack **TEST** secret key (`sk_test_...`). Live keys are rejected.
-- `QUALIFICATION_TOKEN_SECRET`: recommended random secret of at least 32 characters used to sign one-hour CV qualification tokens. If omitted, the server derives the token-signing key from `PAYSTACK_SECRET_KEY` only when it is a Paystack TEST key.
+- `PAYSTACK_SECRET_KEY`: the Paystack secret key for the selected environment (`sk_test_...` for sandbox or `sk_live_...` for live payments). The configured key is used as-is for initialization and verification; the server does not switch between test and live keys.
+- `QUALIFICATION_TOKEN_SECRET`: random secret of at least 32 characters used to sign one-hour CV qualification tokens. It is required when using a LIVE key and recommended in all environments. For backward-compatible test-mode setup only, if omitted the server derives the token-signing key from a valid Paystack TEST key.
 - `DATABASE_URL`: PostgreSQL connection string for the Digital Forensics registration database. Use a pooled/serverless-compatible URL for serverless deployment.
 - `USD_GHS_RATE`: optional server-only exchange rate; defaults to `11.55`.
 - `SITE_URL`: optional public site origin used for the Paystack callback URL.
@@ -112,7 +112,7 @@ Run local pricing, qualification-token, initialization, and verification tests w
 npm test
 ```
 
-Tests use mocked database queries and Paystack responses; they do not require a database connection or create real transactions. Hosted checkout card and Mobile Money flows require valid Paystack TEST credentials and an actual sandbox transaction.
+Tests use mocked database queries and Paystack responses; they do not require a database connection or create real transactions. Hosted checkout card and Mobile Money flows require valid Paystack credentials; use a TEST key for sandbox transactions and a LIVE key only in the explicitly configured production environment.
 
 ## Applicant magic-link sign-in
 
