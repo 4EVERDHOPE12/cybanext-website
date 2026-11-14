@@ -2493,20 +2493,27 @@ a {
 }
 
 .hero-banner-visual {
-  position: relative;
-  width: 100%;
+  position: absolute;
+  z-index: 0;
+  inset: 0 0 0 auto;
+  width: 60%;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 12px;
-  background: #101114;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.38);
+}
+
+.hero-banner-visual::after {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, #101114 0%, rgba(16, 17, 20, 0.78) 10%, rgba(16, 17, 20, 0.12) 38%, transparent 62%),
+    linear-gradient(0deg, #101114 0%, transparent 16%, transparent 86%, #171719 100%);
+  content: '';
+  pointer-events: none;
 }
 
 .hero-banner-image {
   display: block;
   width: 100%;
-  height: auto;
-  aspect-ratio: 1.18 / 1;
+  height: 100%;
   object-fit: cover;
   object-position: center;
 }
@@ -2527,7 +2534,22 @@ a {
   }
 
   .hero-banner-visual {
+    position: relative;
+    inset: auto;
+    width: 100%;
     max-width: 700px;
+    aspect-ratio: 1.18 / 1;
+    justify-self: center;
+  }
+
+  .hero-banner-visual::after {
+    background:
+      linear-gradient(90deg, #101114 0%, transparent 14%, transparent 86%, #101114 100%),
+      linear-gradient(0deg, #101114 0%, transparent 16%, transparent 86%, #171719 100%);
+  }
+
+  .hero-banner-image {
+    height: 100%;
   }
 }
 
@@ -2584,7 +2606,12 @@ a {
     width: 100%;
   }
 
+  .hero-banner-visual {
+    aspect-ratio: auto;
+  }
+
   .hero-banner-image {
+    height: auto;
     aspect-ratio: 1.35 / 1;
   }
 }
