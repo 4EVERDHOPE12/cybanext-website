@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/payment-prices",
+      "destination": "/api/initialize-payment?operation=prices"
+    }
+  ]
+}

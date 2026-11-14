@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
+const fs = require('node:fs');
 const test = require('node:test');
 
 process.env.USD_GHS_RATE = '11.55';
@@ -19,8 +20,8 @@ const {
 const initializePayment = require('../api/initialize-payment');
 const initializeDigitalForensicsPayment =
   require('../api/initialize-digital-forensics-payment');
-const getPaymentPrices = require('../api/payment-prices');
 const verifyPayment = require('../api/verify-payment');
+const vercelConfig = require('../vercel.json');
 const digitalForensicsDatabase =
   require('../lib/digital-forensics-database');
 const digitalForensicsStore =
@@ -55,21 +56,95 @@ function createResponse() {
 
 function withFakeDigitalForensicsDatabase(t) {
   const originalQuery = digitalForensicsDatabase.query;
+  const originalTransaction = digitalForensicsDatabase.transaction;
   const registrations = new Map();
   const applicants = new Map();
   const attempts = new Map();
   const notifications = new Map();
+  const smsNotifications = new Map();
   const smsConsents = new Map();
+  const statements = [];
+  const transactionCalls = [];
+  function queueSms(registration, registrationId, reference, track) {
+    const consent = smsConsents.get(registrationId);
+    if (
+      !registration ||
+      registration.status !== 'payment_verified' ||
+      !consent ||
+      consent.eventType !== 'grant' ||
+      consent.phoneSnapshot !== registration.phone ||
+      !/^\+233[0-9]{9}$/.test(registration.phone || '')
+    ) {
+      return;
+    }
+
+    const eventKey = `sms:payment-success:${
+      track === 'Digital Forensics' ? 'digital-forensics' : 'regular-track'
+    }:${registrationId}:${reference}`;
+    if (smsNotifications.has(eventKey)) return;
+    smsNotifications.set(eventKey, {
+      eventKey,
+      eventType: 'sms_payment_success',
+      registrationId,
+      phoneSnapshot: registration.phone,
+      templateData: { track }
+    });
+  }
+
   const fake = {
     failure: null,
     async query(strings, ...values) {
       const statement = strings.join(' ');
+      statements.push(statement);
       if (
         this.failure &&
         (!this.failure.statementIncludes ||
           statement.includes(this.failure.statementIncludes))
       ) {
         throw this.failure.error || this.failure;
+      }
+
+      if (statement.includes('INSERT INTO sms_notification_outbox')) {
+        let registration;
+        let registrationId;
+        let reference;
+        let transactionId;
+        let track;
+
+        if (statement.includes('FROM digital_forensics_registrations AS registration')) {
+          [registrationId, reference, transactionId] = values;
+          registration = registrations.get(registrationId);
+          track = 'Digital Forensics';
+          if (
+            !registration ||
+            registration.status !== 'payment_verified' ||
+            registration.paymentReference !== reference ||
+            String(registration.verifiedTransactionId) !== String(transactionId)
+          ) {
+            return [];
+          }
+        } else {
+          [reference, transactionId] = values;
+          const attempt = attempts.get(reference);
+          registration = attempt && applicants.get(attempt.registrationId);
+          registrationId = registration && registration.id;
+          track = registration && registration.track;
+          if (
+            !attempt ||
+            !registration ||
+            attempt.status !== 'payment_verified' ||
+            registration.status !== 'payment_verified' ||
+            String(attempt.verifiedTransactionId) !== String(transactionId)
+          ) {
+            return [];
+          }
+        }
+
+        const before = smsNotifications.size;
+        queueSms(registration, registrationId, reference, track);
+        return smsNotifications.size > before
+          ? [{ eventKey: [...smsNotifications.keys()].at(-1) }]
+          : [];
       }
 
       if (statement.includes('INSERT INTO regular_track_applicants')) {
@@ -102,6 +177,14 @@ function withFakeDigitalForensicsDatabase(t) {
           recipientEmail: email,
           templateData: { fullName, track }
         });
+        if (smsConsent === true) {
+          smsConsents.set(id, {
+            registrationId: id,
+            eventType: 'grant',
+            phoneSnapshot: phone,
+            source: 'regular_track_registration'
+          });
+        }
         return [{ ...row }];
       }
 
@@ -278,6 +361,7 @@ function withFakeDigitalForensicsDatabase(t) {
             track: applicant.track
           }
         });
+        queueSms(applicant, applicant.id, reference, applicant.track);
         return [{
           reference,
           registrationId: applicant.id
@@ -352,6 +436,9 @@ function withFakeDigitalForensicsDatabase(t) {
             }
           });
         }
+        if (statusForSet === 'payment_verified') {
+          queueSms(row, id, reference, 'Digital Forensics');
+        }
 
         return [{ ...row }];
       }
@@ -394,21 +481,67 @@ function withFakeDigitalForensicsDatabase(t) {
       }
 
       throw new Error('Unexpected database statement in test mock.');
+    },
+    async transaction(buildQueries) {
+      const queries = buildQueries((strings, ...values) => ({ strings, values }));
+      transactionCalls.push(queries.map((query) => query.strings.join(' ')));
+      const maps = [
+        registrations,
+        applicants,
+        attempts,
+        notifications,
+        smsNotifications,
+        smsConsents
+      ];
+      const snapshots = maps.map((map) =>
+        new Map([...map].map(([key, value]) => [key, { ...value }]))
+      );
+      try {
+        const results = [];
+        for (const query of queries) {
+          results.push(await fake.query(query.strings, ...query.values));
+        }
+        return results;
+      } catch (error) {
+        maps.forEach((map, index) => {
+          map.clear();
+          for (const [key, value] of snapshots[index]) map.set(key, value);
+        });
+        throw error;
+      }
     }
   };
 
   digitalForensicsDatabase.query = fake.query.bind(fake);
+  digitalForensicsDatabase.transaction = fake.transaction.bind(fake);
   t.after(() => {
     digitalForensicsDatabase.query = originalQuery;
+    digitalForensicsDatabase.transaction = originalTransaction;
   });
 
-  return { fake, notifications, registrations, applicants, attempts, smsConsents };
+  return {
+    fake,
+    notifications,
+    smsNotifications,
+    registrations,
+    applicants,
+    attempts,
+    smsConsents,
+    statements,
+    transactionCalls
+  };
 }
 
-async function createAwaitingDigitalForensicsRegistration(email, reference) {
+async function createAwaitingDigitalForensicsRegistration(
+  email,
+  reference,
+  smsConsent = false
+) {
   const registration = await digitalForensicsStore.createRegistration({
     fullName: 'Payment Applicant',
-    email
+    email,
+    phone: '+233201234567',
+    smsConsent
   });
   const updated = await digitalForensicsStore.updateRegistration(
     registration.id,
@@ -423,13 +556,19 @@ async function createAwaitingDigitalForensicsRegistration(email, reference) {
   return updated;
 }
 
-async function createAwaitingRegularPayment(email, reference, track = 'incident_response') {
+async function createAwaitingRegularPayment(
+  email,
+  reference,
+  track = 'incident_response',
+  smsConsent = false
+) {
   const regularStore = require('../lib/regular-track-payment-store');
   const applicant = await regularStore.createApplicant({
     fullName: 'Test Applicant',
     email,
     phone: '+233201234567',
-    track
+    track,
+    smsConsent
   });
   const attempt = await regularStore.createPaymentAttempt({
     reference,
@@ -674,21 +813,85 @@ test('price lookup rejects unknown tracks and prototype properties', () => {
   assert.equal(getPaymentPrice('digital_forensics', 'toString'), null);
 });
 
-test('public price endpoint reflects central server prices', () => {
+test('legacy pricing URL rewrites to the initializer and preserves its response', () => {
+  const rewrite = vercelConfig.rewrites.find(
+    (route) => route.source === '/api/payment-prices'
+  );
+  assert.deepEqual(rewrite, {
+    source: '/api/payment-prices',
+    destination: '/api/initialize-payment?operation=prices'
+  });
+
+  const destination = new URL(
+    rewrite.destination,
+    'https://cybanext.test'
+  );
   const response = createResponse();
-  getPaymentPrices({ method: 'GET' }, response);
+  initializePayment({
+    method: 'GET',
+    url: `${destination.pathname}${destination.search}`,
+    query: Object.fromEntries(destination.searchParams)
+  }, response);
+
+  const regularPrice = getPaymentPrice('incident_response');
+  const localPrice = getPaymentPrice('digital_forensics', 'GHS');
+  const internationalPrice =
+    getPaymentPrice('digital_forensics', 'USD_REFERENCE');
 
   assert.equal(response.statusCode, 200);
-  assert.equal(response.body.regular.chargeAmountGhs, 346.5);
-  assert.equal(response.body.digitalForensics.GHS.chargeAmountGhs, 1200);
-  assert.equal(
-    response.body.digitalForensics.USD_REFERENCE.chargeAmountGhs,
-    1386
+  assert.deepEqual(response.body, {
+    regular: {
+      referenceAmount: regularPrice.referenceAmount,
+      referenceCurrency: regularPrice.referenceCurrency,
+      chargeAmountGhs: regularPrice.chargeAmountGhs,
+      paystackCurrency: regularPrice.paystackCurrency
+    },
+    digitalForensics: {
+      GHS: {
+        referenceAmount: localPrice.referenceAmount,
+        referenceCurrency: localPrice.referenceCurrency,
+        chargeAmountGhs: localPrice.chargeAmountGhs,
+        paystackCurrency: localPrice.paystackCurrency
+      },
+      USD_REFERENCE: {
+        referenceAmount: internationalPrice.referenceAmount,
+        referenceCurrency: internationalPrice.referenceCurrency,
+        chargeAmountGhs: internationalPrice.chargeAmountGhs,
+        paystackCurrency: internationalPrice.paystackCurrency,
+        exchangeRate: internationalPrice.exchangeRate
+      }
+    }
+  });
+});
+
+test('legacy pricing rewrite rejects unsupported methods', () => {
+  const rewrite = vercelConfig.rewrites.find(
+    (route) => route.source === '/api/payment-prices'
   );
-  assert.equal(
-    response.body.digitalForensics.USD_REFERENCE.exchangeRate,
-    11.55
+  const query = Object.fromEntries(
+    new URL(rewrite.destination, 'https://cybanext.test').searchParams
   );
+
+  for (const method of ['POST', 'PUT', 'DELETE']) {
+    const response = createResponse();
+    initializePayment({ method, query }, response);
+    assert.equal(response.statusCode, 405);
+    assert.deepEqual(response.body, { error: 'Method not allowed.' });
+  }
+
+  const initializeGetResponse = createResponse();
+  initializePayment({ method: 'GET', query: {} }, initializeGetResponse);
+  assert.equal(initializeGetResponse.statusCode, 405);
+});
+
+test('frontends continue using the public legacy pricing URL', () => {
+  for (const file of [
+    '../script.js',
+    '../payment/digital-forensics-payment.js'
+  ]) {
+    const source = fs.readFileSync(require.resolve(file), 'utf8');
+    assert.match(source, /fetch\(['"]\/api\/payment-prices['"]\)/);
+  }
 });
 
 test('qualification tokens are signed, applicant-bound, and tamper evident', () => {
@@ -1131,11 +1334,14 @@ test('regular payment initialization keeps a Paystack-created attempt initializi
 });
 
 test('regular payment verification persists success and is idempotent', async (t) => {
-  const { attempts, notifications } = withFakeDigitalForensicsDatabase(t);
+  const { attempts, notifications, smsNotifications, transactionCalls } =
+    withFakeDigitalForensicsDatabase(t);
   const reference = 'CYB-345678-ABCDEF';
   const { applicant } = await createAwaitingRegularPayment(
     'applicant@example.com',
-    reference
+    reference,
+    'incident_response',
+    true
   );
   const transaction = {
     id: 778899,
@@ -1165,12 +1371,26 @@ test('regular payment verification persists success and is idempotent', async (t
     ).eventType,
     'regular_track_payment_success'
   );
+  assert.equal(smsNotifications.size, 1);
+  assert.equal(
+    [...smsNotifications.values()][0].phoneSnapshot,
+    applicant.phone
+  );
+  const paymentTransaction = transactionCalls.find((queries) =>
+    queries.some((statement) =>
+      statement.includes('INSERT INTO sms_notification_outbox')
+    )
+  );
+  assert.match(paymentTransaction[0], /UPDATE regular_track_payment_attempts/);
+  assert.match(paymentTransaction[0], /INSERT INTO email_notification_outbox/);
+  assert.match(paymentTransaction[1], /consent\.event_type = 'grant'/);
 
   const duplicateResponse = createResponse();
   await verifyPayment({ method: 'POST', body: { reference } }, duplicateResponse);
   assert.equal(duplicateResponse.statusCode, 200);
   assert.equal(duplicateResponse.body.verified, true);
   assert.equal(notifications.size, 2);
+  assert.equal(smsNotifications.size, 1);
 });
 
 test('regular failed payment is persisted without affecting a verified attempt', async (t) => {
@@ -1211,7 +1431,8 @@ test('regular failed payment is persisted without affecting a verified attempt',
 });
 
 test('a failed verification after successful payment cannot downgrade the attempt', async (t) => {
-  const { attempts, notifications } = withFakeDigitalForensicsDatabase(t);
+  const { attempts, notifications, smsNotifications } =
+    withFakeDigitalForensicsDatabase(t);
   const reference = 'CYB-456790-ABCDEF';
   const { applicant } = await createAwaitingRegularPayment(
     'applicant@example.com',
@@ -1235,6 +1456,7 @@ test('a failed verification after successful payment cannot downgrade the attemp
   const successResponse = createResponse();
   await verifyPayment({ method: 'POST', body: { reference } }, successResponse);
   assert.equal(successResponse.statusCode, 200);
+  assert.equal(smsNotifications.size, 0);
 
   stubPaystackRequest(t, {
     status: true,
@@ -1347,11 +1569,13 @@ test('regular endpoint cannot skip the Digital Forensics payment page', async ()
 });
 
 test('Digital Forensics verification associates and conditionally marks the persisted registration paid', async (t) => {
-  withFakeDigitalForensicsDatabase(t);
+  const { smsNotifications, transactionCalls } =
+    withFakeDigitalForensicsDatabase(t);
   const reference = 'DF-345678-ABCDEF';
   const registration = await createAwaitingDigitalForensicsRegistration(
     'course@example.com',
-    reference
+    reference,
+    true
   );
   const transaction = {
     id: 998877,
@@ -1379,6 +1603,60 @@ test('Digital Forensics verification associates and conditionally marks the pers
   assert.equal(savedRegistration.paymentReference, reference);
   assert.equal(savedRegistration.verifiedTransactionId, transaction.id);
   assert.ok(savedRegistration.paymentVerificationTimestamp);
+  assert.equal(smsNotifications.size, 1);
+  assert.equal(
+    [...smsNotifications.values()][0].eventType,
+    'sms_payment_success'
+  );
+  const paymentTransaction = transactionCalls.find((queries) =>
+    queries.some((statement) =>
+      statement.includes('INSERT INTO sms_notification_outbox')
+    )
+  );
+  assert.match(paymentTransaction[0], /UPDATE digital_forensics_registrations/);
+  assert.match(paymentTransaction[0], /INSERT INTO email_notification_outbox/);
+  assert.match(paymentTransaction[1], /consent\.event_type = 'grant'/);
+});
+
+test('payment verification suppresses SMS when the latest consent is withdrawn', async (t) => {
+  const { smsNotifications, smsConsents } =
+    withFakeDigitalForensicsDatabase(t);
+  const reference = 'CYB-456790-ABCDEF';
+  const { applicant } = await createAwaitingRegularPayment(
+    'applicant@example.com',
+    reference,
+    'incident_response',
+    true
+  );
+  smsConsents.set(applicant.id, {
+    registrationId: applicant.id,
+    eventType: 'withdrawal',
+    phoneSnapshot: applicant.phone
+  });
+  stubPaystackRequest(t, {
+    status: true,
+    data: {
+      id: 778899,
+      status: 'success',
+      reference,
+      currency: 'GHS',
+      amount: 34650,
+      customer: { email: applicant.email },
+      metadata: {
+        track: applicant.track,
+        pricing_option: 'USD_REFERENCE',
+        registration_id: applicant.id,
+        qualification_token: createApplicantToken(applicant.track)
+      }
+    }
+  });
+  const response = createResponse();
+
+  await verifyPayment({ method: 'POST', body: { reference } }, response);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.verified, true);
+  assert.equal(smsNotifications.size, 0);
 });
 
 test('Digital Forensics verification does not report success when the database payment update fails', async (t) => {

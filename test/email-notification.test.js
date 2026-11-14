@@ -397,7 +397,10 @@ test('cron notification worker rejects unauthorized requests before processing',
 });
 
 test('cron notification worker rejects unsupported methods and missing configuration', async (t) => {
-  withEnvironment(t, { CRON_SECRET: 'test-cron-secret' });
+  withEnvironment(t, {
+    CRON_SECRET: 'test-cron-secret',
+    EMAIL_RECOVERY_SECRET: ''
+  });
   const unsupported = response();
   await cronHandler({ method: 'PUT', headers: {} }, unsupported);
   assert.equal(unsupported.statusCode, 405);
@@ -406,6 +409,10 @@ test('cron notification worker rejects unsupported methods and missing configura
   const unconfigured = response();
   await cronHandler({ method: 'GET', headers: {} }, unconfigured);
   assert.equal(unconfigured.statusCode, 500);
+
+  const recoveryUnconfigured = response();
+  await cronHandler({ method: 'POST', headers: {}, body: {} }, recoveryUnconfigured);
+  assert.equal(recoveryUnconfigured.statusCode, 500);
 });
 
 test('cron notification worker processes authorized requests and reports permanent failures', async (t) => {
@@ -486,8 +493,23 @@ test('operator recovery only requeues a permanently failed event', async (t) => 
   assert.equal(await requeuePermanentFailure('registration:not-found'), false);
 });
 
-test('cron operator recovery requires authentication and validates the event key', async (t) => {
-  withEnvironment(t, { CRON_SECRET: 'test-cron-secret' });
+test('email recovery POST requires its separate credential and validates the event key', async (t) => {
+  withEnvironment(t, {
+    CRON_SECRET: 'test-cron-secret',
+    EMAIL_RECOVERY_SECRET: 'test-email-recovery-secret'
+  });
+
+  const cronCredential = response();
+  await cronHandler({
+    method: 'POST',
+    headers: { authorization: 'Bearer test-cron-secret' },
+    body: {
+      action: 'requeue-permanent-failed',
+      eventKey: 'registration:unit-test'
+    }
+  }, cronCredential);
+  assert.equal(cronCredential.statusCode, 401);
+
   const unauthorized = response();
   await cronHandler({ method: 'POST', headers: {}, body: {} }, unauthorized);
   assert.equal(unauthorized.statusCode, 401);
@@ -495,19 +517,22 @@ test('cron operator recovery requires authentication and validates the event key
   const invalid = response();
   await cronHandler({
     method: 'POST',
-    headers: { authorization: 'Bearer test-cron-secret' },
+    headers: { authorization: 'Bearer test-email-recovery-secret' },
     body: { action: 'requeue-permanent-failed', eventKey: 'invalid event key' }
   }, invalid);
   assert.equal(invalid.statusCode, 400);
 });
 
 test('cron operator recovery requeues an authenticated permanent failure', async (t) => {
-  withEnvironment(t, { CRON_SECRET: 'test-cron-secret' });
+  withEnvironment(t, {
+    CRON_SECRET: 'test-cron-secret',
+    EMAIL_RECOVERY_SECRET: 'test-email-recovery-secret'
+  });
   withDatabase(t, async () => [{ eventKey: 'registration:unit-test' }]);
   const res = response();
   await cronHandler({
     method: 'POST',
-    headers: { authorization: 'Bearer test-cron-secret' },
+    headers: { authorization: 'Bearer test-email-recovery-secret' },
     body: {
       action: 'requeue-permanent-failed',
       eventKey: 'registration:unit-test'
@@ -516,4 +541,23 @@ test('cron operator recovery requeues an authenticated permanent failure', async
 
   assert.equal(res.statusCode, 200);
   assert.deepEqual(res.body, { requeued: true });
+});
+
+test('email recovery rejects a credential shared with the scheduled worker', async (t) => {
+  withEnvironment(t, {
+    CRON_SECRET: 'shared-test-secret',
+    EMAIL_RECOVERY_SECRET: 'shared-test-secret'
+  });
+  const res = response();
+  await cronHandler({
+    method: 'POST',
+    headers: { authorization: 'Bearer shared-test-secret' },
+    body: {
+      action: 'requeue-permanent-failed',
+      eventKey: 'registration:unit-test'
+    }
+  }, res);
+
+  assert.equal(res.statusCode, 500);
+  assert.deepEqual(res.body, { error: 'Email notification recovery is not configured.' });
 });

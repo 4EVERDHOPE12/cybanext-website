@@ -5,15 +5,21 @@ const {
   requeuePermanentFailure
 } = require('../lib/email-notification-outbox');
 
-function isAuthorized(req, secret) {
-  const authorization = req.headers?.authorization;
-  if (typeof authorization !== 'string' || !authorization.startsWith('Bearer ')) {
+function secretsMatch(first, second) {
+  if (typeof first !== 'string' || typeof second !== 'string') {
     return false;
   }
-  const provided = Buffer.from(authorization.slice(7));
-  const expected = Buffer.from(secret);
-  return provided.length === expected.length &&
-    crypto.timingSafeEqual(provided, expected);
+  const firstBuffer = Buffer.from(first);
+  const secondBuffer = Buffer.from(second);
+  return firstBuffer.length === secondBuffer.length &&
+    crypto.timingSafeEqual(firstBuffer, secondBuffer);
+}
+
+function isAuthorized(req, secret) {
+  const authorization = req.headers?.authorization;
+  return typeof authorization === 'string' &&
+    authorization.startsWith('Bearer ') &&
+    secretsMatch(authorization.slice(7), secret);
 }
 
 module.exports = async function handler(req, res) {
@@ -21,10 +27,16 @@ module.exports = async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed.' });
   }
 
-  const secret = process.env.CRON_SECRET;
-  if (!secret) {
-    console.error('Email notification worker is not configured.');
-    return res.status(500).json({ error: 'Email notification worker is not configured.' });
+  const isRecoveryRequest = req.method === 'POST';
+  const secret = isRecoveryRequest
+    ? process.env.EMAIL_RECOVERY_SECRET
+    : process.env.CRON_SECRET;
+  if (!secret || (isRecoveryRequest && secretsMatch(secret, process.env.CRON_SECRET))) {
+    const operation = isRecoveryRequest
+      ? 'Email notification recovery'
+      : 'Email notification worker';
+    console.error(`${operation} is not configured.`);
+    return res.status(500).json({ error: `${operation} is not configured.` });
   }
   if (!isAuthorized(req, secret)) {
     return res.status(401).json({ error: 'Unauthorized.' });

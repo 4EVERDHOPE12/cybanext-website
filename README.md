@@ -128,3 +128,16 @@ Configure these server-side variables for email-enabled environments:
 - `SITE_URL`: HTTPS site origin used to form the sign-in link.
 
 The endpoint returns the same confirmation for known and unknown addresses. Links expire after 15 minutes and are single-use. Sessions expire after 30 days. Limits are three requests per normalized email and ten per IP in each rolling 15-minute window, stored in PostgreSQL. Automated tests use mocked storage and email transport and do not contact Resend or a database.
+
+## SMS payment-success notifications
+
+The registration forms collect optional, unchecked consent for payment-success SMS only. A successful payment queues an SMS only when the latest consent event is an active grant for the registration's current Ghanaian phone number. The separate `/api/process-sms-notifications` worker rechecks payment status and consent immediately before delivery.
+
+Configure these server-side environment variables:
+
+- `ARKESEL_API_KEY`: Arkesel API credential.
+- `ARKESEL_SENDER_ID`: approved Arkesel sender ID (1–11 alphanumeric characters).
+- `CRON_SECRET`: high-entropy bearer secret used only to authenticate scheduled notification processing. Configure QStash to forward it as `Authorization: Bearer ...`; schedule `GET /api/process-email-notifications` and `POST /api/process-sms-notifications`.
+- `EMAIL_RECOVERY_SECRET`: a separate high-entropy bearer secret required only for the email worker's manual recovery `POST`. It must be different from `CRON_SECRET`.
+
+Configure both secrets in each server-side environment that uses the corresponding operation; do not commit their values. The worker endpoints are not scheduled by this repository; configure and verify QStash before relying on automatic delivery or retry processing. The existing Migration 006 purge function is also not scheduled or granted to a worker role here, so 90-day cleanup is not operational. Consent grants are recorded, but a secure consent-withdrawal flow is not implemented; do not enable SMS delivery until an authorized withdrawal mechanism is available.

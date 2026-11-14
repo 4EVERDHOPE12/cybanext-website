@@ -237,6 +237,92 @@ if (!enabled) {
     const client = new Client({ connectionString }); await client.connect();
     try { return (await client.query(sql, params)).rows; } finally { await client.end(); }
   };
+  const bindDatabaseClient = (database, client, { manageTransaction = true } = {}) => {
+    const originalQuery = database.query;
+    const originalTransaction = database.transaction;
+    const compile = (strings, values) => ({
+      statement: strings.reduce((sql, part, index) =>
+        sql + (index === 0 ? '' : `$${index}`) + part, ''),
+      values
+    });
+    database.query = async (strings, ...values) => {
+      const { statement, values: parameters } = compile(strings, values);
+      return (await client.query(statement, parameters)).rows;
+    };
+    database.transaction = async (buildQueries) => {
+      const statements = buildQueries((strings, ...values) => compile(strings, values));
+      if (manageTransaction) await client.query('BEGIN');
+      try {
+        const results = [];
+        for (const { statement, values } of statements) {
+          results.push((await client.query(statement, values)).rows);
+        }
+        if (manageTransaction) await client.query('COMMIT');
+        return results;
+      } catch (error) {
+        if (manageTransaction) await client.query('ROLLBACK');
+        throw error;
+      }
+    };
+    return () => {
+      database.query = originalQuery;
+      database.transaction = originalTransaction;
+    };
+  };
+  const createSmsPaymentFixtures = async (
+    digitalStore,
+    regularStore,
+    suffix,
+    { digitalConsent = true, regularConsent = true } = {}
+  ) => {
+    const digital = await digitalStore.createRegistration({
+      fullName: `SMS Digital ${suffix}`,
+      email: `sms-digital-${suffix}@example.test`,
+      phone: '0241234567',
+      smsConsent: digitalConsent
+    });
+    const regular = await regularStore.createApplicant({
+      fullName: `SMS Regular ${suffix}`,
+      email: `sms-regular-${suffix}@example.test`,
+      phone: '0241234567',
+      track: 'incident_response',
+      smsConsent: regularConsent
+    });
+    const digitalReference = `DF-SMS-${suffix}`;
+    await digitalStore.updateRegistration(digital.id, {
+      status: 'payment_initiated',
+      paymentReference: digitalReference,
+      pricingOption: 'GHS'
+    }, { expectedStatus: 'pending', expectedPaymentReference: null });
+    const regularReference = `CYB-SMS-${suffix}`;
+    await regularStore.createPaymentAttempt({
+      reference: regularReference,
+      registrationId: regular.id,
+      referenceAmount: 30,
+      expectedAmount: 34650,
+      expectedCurrency: 'GHS'
+    });
+    await regularStore.updatePaymentAttemptStatus(regularReference, 'payment_initiated');
+    return { digital, regular, digitalReference, regularReference, suffix };
+  };
+  const verifySmsPaymentFixtures = async (
+    digitalStore,
+    regularStore,
+    fixtures
+  ) => {
+    const digitalPayment = await digitalStore.updatePaymentStatusWithNotification({
+      registrationId: fixtures.digital.id,
+      reference: fixtures.digitalReference,
+      status: 'payment_verified',
+      transactionId: `digital-transaction-${fixtures.suffix}`,
+      paymentVerificationTimestamp: new Date().toISOString()
+    });
+    const regularPayment = await regularStore.markPaymentAttemptVerified(
+      fixtures.regularReference,
+      `regular-transaction-${fixtures.suffix}`
+    );
+    return { digitalPayment, regularPayment };
+  };
   const pre006Migrations = loadMigrations().slice(0, -1);
   const installPre006Schema = async () => {
     const client = new Client({ connectionString, connectionTimeoutMillis: 5000 });
@@ -825,17 +911,12 @@ if (!enabled) {
     const digitalStore = require('../lib/digital-forensics-store');
     const regularStore = require('../lib/regular-track-payment-store');
     const { claimDueEvents } = require('../lib/email-notification-outbox');
-    const originalQuery = database.query;
     const client = new Client({ connectionString });
     await client.connect();
     const registrationIds = [];
-    database.query = async (strings, ...values) => {
-      const statement = strings.reduce((sql, part, index) =>
-        sql + (index === 0 ? '' : `$${index}`) + part, '');
-      return (await client.query(statement, values)).rows;
-    };
+    const restoreDatabase = bindDatabaseClient(database, client);
     t.after(async () => {
-      database.query = originalQuery;
+      restoreDatabase();
       try {
         await client.query('DELETE FROM public.email_notification_outbox WHERE digital_forensics_registration_id = ANY($1::text[]) OR regular_track_registration_id = ANY($1::text[])', [registrationIds]);
         await client.query('DELETE FROM public.digital_forensics_registrations WHERE registration_id = ANY($1::text[])', [registrationIds]);
@@ -924,6 +1005,396 @@ if (!enabled) {
     assert.equal(claimed[0].eventType, 'regular_track_registration_confirmation');
     assert.equal(claimed[0].recipientEmail, regular.email);
     assert.equal(claimed[0].attemptCount, 1);
+  });
+
+  test('payment verification queues one SMS for each registration type and is idempotent', async () => {
+    await reset();
+    await migrate();
+    const suffix = crypto.randomUUID().replace(/-/g, '');
+    const database = require('../lib/digital-forensics-database');
+    const digitalStore = require('../lib/digital-forensics-store');
+    const regularStore = require('../lib/regular-track-payment-store');
+    const client = new Client({ connectionString });
+    await client.connect();
+    const restoreDatabase = bindDatabaseClient(database, client);
+
+    try {
+      const fixtures = await createSmsPaymentFixtures(
+        digitalStore, regularStore, suffix
+      );
+      const firstVerification = await verifySmsPaymentFixtures(
+        digitalStore, regularStore, fixtures
+      );
+      assert.equal(firstVerification.digitalPayment.status, 'payment_verified');
+      assert.equal(firstVerification.regularPayment.reference, fixtures.regularReference);
+
+      const duplicateVerification = await verifySmsPaymentFixtures(
+        digitalStore, regularStore, fixtures
+      );
+      assert.equal(duplicateVerification.digitalPayment, null);
+      assert.equal(duplicateVerification.regularPayment, null);
+
+      const events = await client.query(`
+        SELECT event_key, event_type, phone_snapshot, template_data,
+          regular_track_registration_id, digital_forensics_registration_id
+        FROM public.sms_notification_outbox
+        ORDER BY event_key
+      `);
+      assert.equal(events.rowCount, 2);
+      assert.ok(events.rows.some((event) =>
+        event.event_type === 'sms_payment_success' &&
+        event.digital_forensics_registration_id === fixtures.digital.id &&
+        event.regular_track_registration_id === null &&
+        event.phone_snapshot === '+233241234567' &&
+        event.template_data.track === 'Digital Forensics'
+      ));
+      assert.ok(events.rows.some((event) =>
+        event.event_type === 'sms_payment_success' &&
+        event.regular_track_registration_id === fixtures.regular.id &&
+        event.digital_forensics_registration_id === null &&
+        event.phone_snapshot === '+233241234567' &&
+        event.template_data.track === 'incident_response'
+      ));
+      const paymentEmails = await client.query(`
+        SELECT count(*)::int AS count
+        FROM public.email_notification_outbox
+        WHERE event_type IN (
+          'digital_forensics_payment_success',
+          'regular_track_payment_success'
+        )
+      `);
+      assert.equal(paymentEmails.rows[0].count, 2);
+    } finally {
+      restoreDatabase();
+      await client.end();
+    }
+  });
+
+  test('SMS payment queueing suppresses missing and withdrawn consent without blocking payment', async () => {
+    await reset();
+    await migrate();
+    const suffix = crypto.randomUUID().replace(/-/g, '');
+    const database = require('../lib/digital-forensics-database');
+    const digitalStore = require('../lib/digital-forensics-store');
+    const regularStore = require('../lib/regular-track-payment-store');
+    const client = new Client({ connectionString });
+    await client.connect();
+    const restoreDatabase = bindDatabaseClient(database, client);
+
+    try {
+      const fixtures = await createSmsPaymentFixtures(
+        digitalStore,
+        regularStore,
+        suffix,
+        { digitalConsent: true, regularConsent: false }
+      );
+      await client.query(`
+        INSERT INTO public.sms_consent_events (
+          digital_forensics_registration_id, event_type, phone_snapshot,
+          purpose, policy_version, source
+        )
+        VALUES (
+          $1, 'withdrawal', '+233241234567',
+          'SMS notifications confirming successful payment for a Cybanext programme.',
+          'sms-payment-success-v1', 'digital_forensics_standalone'
+        )
+      `, [fixtures.digital.id]);
+
+      const payments = await verifySmsPaymentFixtures(
+        digitalStore, regularStore, fixtures
+      );
+      assert.equal(payments.digitalPayment.status, 'payment_verified');
+      assert.equal(payments.regularPayment.reference, fixtures.regularReference);
+      const smsCount = await client.query(
+        'SELECT count(*)::int AS count FROM public.sms_notification_outbox'
+      );
+      assert.equal(smsCount.rows[0].count, 0);
+      const emailCount = await client.query(`
+        SELECT count(*)::int AS count
+        FROM public.email_notification_outbox
+        WHERE event_type IN (
+          'digital_forensics_payment_success',
+          'regular_track_payment_success'
+        )
+      `);
+      assert.equal(emailCount.rows[0].count, 2);
+    } finally {
+      restoreDatabase();
+      await client.end();
+    }
+  });
+
+  test('SMS worker suppresses delivery after withdrawal for both registration types', async () => {
+    await reset();
+    await migrate();
+    const suffix = crypto.randomUUID().replace(/-/g, '');
+    const database = require('../lib/digital-forensics-database');
+    const digitalStore = require('../lib/digital-forensics-store');
+    const regularStore = require('../lib/regular-track-payment-store');
+    const { processDueEvents } = require('../lib/sms-notification-outbox');
+    const client = new Client({ connectionString });
+    await client.connect();
+    const restoreDatabase = bindDatabaseClient(database, client);
+    const originalFetch = global.fetch;
+    let fetchCount = 0;
+    global.fetch = async () => {
+      fetchCount += 1;
+      throw new Error('Provider request must not be made after withdrawal.');
+    };
+
+    try {
+      const fixtures = await createSmsPaymentFixtures(
+        digitalStore, regularStore, suffix
+      );
+      await verifySmsPaymentFixtures(digitalStore, regularStore, fixtures);
+      await client.query(`
+        INSERT INTO public.sms_consent_events (
+          digital_forensics_registration_id, event_type, phone_snapshot,
+          purpose, policy_version, source, occurred_at
+        )
+        VALUES (
+          $1, 'withdrawal', '+233241234567',
+          'SMS notifications confirming successful payment for a Cybanext programme.',
+          'sms-payment-success-v1', 'digital_forensics_standalone',
+          clock_timestamp() + INTERVAL '1 second'
+        )
+      `, [fixtures.digital.id]);
+      await client.query(`
+        INSERT INTO public.sms_consent_events (
+          regular_track_registration_id, event_type, phone_snapshot,
+          purpose, policy_version, source, occurred_at
+        )
+        VALUES (
+          $1, 'withdrawal', '+233241234567',
+          'SMS notifications confirming successful payment for a Cybanext programme.',
+          'sms-payment-success-v1', 'main_application',
+          clock_timestamp() + INTERVAL '1 second'
+        )
+      `, [fixtures.regular.id]);
+
+      const results = await processDueEvents(10);
+      assert.equal(results.length, 2);
+      assert.ok(results.every((result) => result.status === 'cancelled'));
+      assert.equal(fetchCount, 0);
+      const states = await client.query(`
+        SELECT status, completed_at, last_error_code
+        FROM public.sms_notification_outbox
+        ORDER BY event_key
+      `);
+      assert.equal(states.rowCount, 2);
+      assert.ok(states.rows.every((row) =>
+        row.status === 'cancelled' &&
+        row.completed_at instanceof Date &&
+        row.last_error_code === 'consent_not_active'
+      ));
+    } finally {
+      restoreDatabase();
+      global.fetch = originalFetch;
+      await client.end();
+    }
+  });
+
+  test('SMS outbox insertion failures roll back both payment verification transactions', async () => {
+    await reset();
+    await migrate();
+    const suffix = crypto.randomUUID().replace(/-/g, '');
+    const database = require('../lib/digital-forensics-database');
+    const digitalStore = require('../lib/digital-forensics-store');
+    const regularStore = require('../lib/regular-track-payment-store');
+    const client = new Client({ connectionString });
+    await client.connect();
+    const restoreDatabase = bindDatabaseClient(database, client);
+
+    try {
+      const fixtures = await createSmsPaymentFixtures(
+        digitalStore, regularStore, suffix
+      );
+      await client.query(`
+        CREATE FUNCTION public.reject_test_sms_outbox_insert()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          RAISE EXCEPTION 'injected SMS outbox failure';
+        END;
+        $$
+      `);
+      await client.query(`
+        CREATE TRIGGER reject_test_sms_outbox_insert
+        BEFORE INSERT ON public.sms_notification_outbox
+        FOR EACH ROW EXECUTE FUNCTION public.reject_test_sms_outbox_insert()
+      `);
+
+      for (const verify of [
+        () => digitalStore.updatePaymentStatusWithNotification({
+          registrationId: fixtures.digital.id,
+          reference: fixtures.digitalReference,
+          status: 'payment_verified',
+          transactionId: `digital-transaction-${suffix}`,
+          paymentVerificationTimestamp: new Date().toISOString()
+        }),
+        () => regularStore.markPaymentAttemptVerified(
+          fixtures.regularReference,
+          `regular-transaction-${suffix}`
+        )
+      ]) {
+        await assert.rejects(verify(), { code: 'P0001' });
+      }
+
+      const paymentStates = await client.query(`
+        SELECT 'digital' AS kind, status
+        FROM public.digital_forensics_registrations
+        WHERE registration_id = $1
+        UNION ALL
+        SELECT 'regular' AS kind, applicant.status
+        FROM public.regular_track_applicants AS applicant
+        WHERE applicant.registration_id = $2
+        UNION ALL
+        SELECT 'attempt' AS kind, status
+        FROM public.regular_track_payment_attempts
+        WHERE payment_reference = $3
+      `, [fixtures.digital.id, fixtures.regular.id, fixtures.regularReference]);
+      assert.deepEqual(
+        Object.fromEntries(paymentStates.rows.map(({ kind, status }) => [kind, status])),
+        {
+          digital: 'payment_initiated',
+          regular: 'payment_initiated',
+          attempt: 'payment_initiated'
+        }
+      );
+      const notificationCounts = await client.query(`
+        SELECT
+          (SELECT count(*)::int FROM public.sms_notification_outbox) AS sms_count,
+          (SELECT count(*)::int FROM public.email_notification_outbox
+            WHERE event_type IN (
+              'digital_forensics_payment_success',
+              'regular_track_payment_success'
+            )) AS payment_email_count
+      `);
+      assert.equal(notificationCounts.rows[0].sms_count, 0);
+      assert.equal(notificationCounts.rows[0].payment_email_count, 0);
+    } finally {
+      restoreDatabase();
+      await client.query(`
+        DROP TRIGGER IF EXISTS reject_test_sms_outbox_insert
+          ON public.sms_notification_outbox
+      `);
+      await client.query(
+        'DROP FUNCTION IF EXISTS public.reject_test_sms_outbox_insert()'
+      );
+      await client.end();
+    }
+  });
+
+  test('SMS worker claims are exclusive and expired leases are reclaimed', async () => {
+    await reset();
+    await migrate();
+    const suffix = crypto.randomUUID().replace(/-/g, '');
+    const database = require('../lib/digital-forensics-database');
+    const regularStore = require('../lib/regular-track-payment-store');
+    const { claimDueEvents } = require('../lib/sms-notification-outbox');
+    const setupClient = new Client({ connectionString });
+    await setupClient.connect();
+    const restoreSetupDatabase = bindDatabaseClient(database, setupClient);
+    let clients;
+    let restoreQuery = () => {};
+
+    try {
+      const applicant = await regularStore.createApplicant({
+        fullName: `SMS Claim ${suffix}`,
+        email: `sms-claim-${suffix}@example.test`,
+        phone: '0241234567',
+        track: 'incident_response',
+        smsConsent: true
+      });
+      const reference = `CYB-SMS-CLAIM-${suffix}`;
+      await regularStore.createPaymentAttempt({
+        reference,
+        registrationId: applicant.id,
+        referenceAmount: 30,
+        expectedAmount: 34650,
+        expectedCurrency: 'GHS'
+      });
+      await regularStore.updatePaymentAttemptStatus(reference, 'payment_initiated');
+      await regularStore.markPaymentAttemptVerified(reference, `tx-${suffix}`);
+      restoreSetupDatabase();
+
+      clients = [new Client({ connectionString }), new Client({ connectionString })];
+      await Promise.all(clients.map((client) => client.connect()));
+      await clients[0].query(`
+        CREATE FUNCTION public.pause_test_sms_outbox_claim()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.status = 'sending' THEN PERFORM pg_sleep(0.3); END IF;
+          RETURN NEW;
+        END;
+        $$
+      `);
+      await clients[0].query(`
+        CREATE TRIGGER pause_test_sms_outbox_claim
+        BEFORE UPDATE OF status ON public.sms_notification_outbox
+        FOR EACH ROW EXECUTE FUNCTION public.pause_test_sms_outbox_claim()
+      `);
+
+      const originalQuery = database.query;
+      let nextClient = 0;
+      database.query = async (strings, ...values) => {
+        const client = clients[nextClient % clients.length];
+        nextClient += 1;
+        const statement = strings.reduce((sql, part, index) =>
+          sql + (index === 0 ? '' : `$${index}`) + part, '');
+        return (await client.query(statement, values)).rows;
+      };
+      restoreQuery = () => { database.query = originalQuery; };
+      const claims = await Promise.all([claimDueEvents(1), claimDueEvents(1)]);
+      const claimed = claims.flat();
+      assert.equal(claimed.length, 1);
+      const firstClaim = claimed[0];
+      assert.equal(firstClaim.regularTrackRegistrationId, applicant.id);
+      assert.equal(firstClaim.attemptCount, 1);
+      assert.ok(firstClaim.claimToken);
+
+      const firstState = await clients[0].query(`
+        SELECT status, attempt_count, claim_token, lease_expires_at
+        FROM public.sms_notification_outbox
+        WHERE event_id = $1
+      `, [firstClaim.eventId]);
+      assert.equal(firstState.rows[0].status, 'sending');
+      assert.equal(firstState.rows[0].attempt_count, 1);
+      assert.equal(firstState.rows[0].claim_token, firstClaim.claimToken);
+      assert.ok(firstState.rows[0].lease_expires_at > new Date());
+
+      await clients[0].query(`
+        UPDATE public.sms_notification_outbox
+        SET lease_expires_at = CURRENT_TIMESTAMP - INTERVAL '1 second'
+        WHERE event_id = $1
+      `, [firstClaim.eventId]);
+      database.query = async (strings, ...values) => {
+        const statement = strings.reduce((sql, part, index) =>
+          sql + (index === 0 ? '' : `$${index}`) + part, '');
+        return (await clients[0].query(statement, values)).rows;
+      };
+      const reclaimed = await claimDueEvents(1);
+      assert.equal(reclaimed.length, 1);
+      assert.equal(reclaimed[0].eventId, firstClaim.eventId);
+      assert.equal(reclaimed[0].attemptCount, 2);
+      assert.notEqual(reclaimed[0].claimToken, firstClaim.claimToken);
+    } finally {
+      restoreQuery();
+      restoreSetupDatabase();
+      if (clients) {
+        try {
+          await clients[0].query(`
+            DROP TRIGGER IF EXISTS pause_test_sms_outbox_claim
+              ON public.sms_notification_outbox
+          `);
+          await clients[0].query(
+            'DROP FUNCTION IF EXISTS public.pause_test_sms_outbox_claim()'
+          );
+        } finally {
+          await Promise.all(clients.map((client) => client.end()));
+        }
+      }
+      await setupClient.end();
+    }
   });
 
   test('production outbox claims are exclusive across concurrent PostgreSQL sessions', async (t) => {
@@ -1706,6 +2177,7 @@ if (!enabled) {
     const database = require('../lib/digital-forensics-database');
     const regularTrackStore = require('../lib/regular-track-payment-store');
     const originalQuery = database.query;
+    const originalTransaction = database.transaction;
     const registrationIds = [];
     let successfulClient;
     let failedClient;
@@ -1747,46 +2219,25 @@ if (!enabled) {
       await failedClient.query(
         "SET application_name = 'cybanext-failed-verification'"
       );
-      const useClientForStore = (client) => {
-        database.query = (strings, ...values) => {
-          const statement = strings.reduce(
-            (sql, part, index) =>
-              sql + part + (index < values.length ? `$${index + 1}` : ''),
-            ''
-          );
-          return client.query(statement, values).then((result) => result.rows);
-        };
-      };
-await successfulClient.query('BEGIN');
-useClientForStore(successfulClient);
+      await successfulClient.query('BEGIN');
+      const restoreSuccessfulClient = bindDatabaseClient(
+        database, successfulClient, { manageTransaction: false }
+      );
+      const verifiedResult = await regularTrackStore.markPaymentAttemptVerified(
+        reference,
+        'tx-concurrent'
+      );
+      restoreSuccessfulClient();
+      assert.ok(verifiedResult, 'Successful verification should update the payment');
 
-const verifiedResult =
-  await regularTrackStore.markPaymentAttemptVerified(
-    reference,
-    'tx-concurrent'
-  );
-
-assert.ok(
-  verifiedResult,
-  'Successful verification should update the payment'
-);
-
-assert.ok(
-  verifiedResult,
-  'Successful verification should update the payment'
-);
-
-    await failedClient.query('BEGIN');
-
-const failedBackendPid = (
-  await failedClient.query('SELECT pg_backend_pid() AS pid')
-).rows[0].pid;
-
-useClientForStore(failedClient);
-
-const failedTransition = regularTrackStore.markPaymentAttemptFailed(
-  reference
-);
+      await failedClient.query('BEGIN');
+      const failedBackendPid = (
+        await failedClient.query('SELECT pg_backend_pid() AS pid')
+      ).rows[0].pid;
+      const restoreFailedClient = bindDatabaseClient(
+        database, failedClient, { manageTransaction: false }
+      );
+      const failedTransition = regularTrackStore.markPaymentAttemptFailed(reference);
 
       let failedTransitionBlocked = false;
       for (let poll = 0; poll < 100; poll += 1) {
@@ -1808,6 +2259,7 @@ const failedTransition = regularTrackStore.markPaymentAttemptFailed(
       assert.equal(failedTransitionBlocked, true);
       await successfulClient.query('COMMIT');
       const failedResult = await failedTransition;
+      restoreFailedClient();
       await failedClient.query('COMMIT');
       assert.equal(failedResult, null);
 
@@ -1840,6 +2292,7 @@ const failedTransition = regularTrackStore.markPaymentAttemptFailed(
         }
       } finally {
         database.query = originalQuery;
+        database.transaction = originalTransaction;
       }
     }
   });
