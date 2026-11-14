@@ -106,7 +106,7 @@ test('course page presents the approved overview, pricing, syllabus and registra
   assert.match(html, /Document findings in a clear forensic report\./);
   assert.match(html, /Apply investigation techniques to incident response scenarios\./);
   assert.doesNotMatch(html, /Standalone Course|Book Your Seat|Book Your Course Seat/);
-  assert.match(html, /Duration<\/span><strong>1 Month/);
+  assert.match(html, /Duration<\/span><strong>2 Months/);
   assert.match(html, /Schedule<\/span><strong>Saturdays &amp; Sundays/);
   assert.match(html, /Cost \(Local\)<\/span><strong>GH₵1,200/);
   assert.match(html, /Cost \(International\)<\/span><strong>\$120/);
