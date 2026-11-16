@@ -755,6 +755,7 @@ a {
   gap: 8px;
   font-size: 14px;
   color: #595959;
+  text-decoration: none;
 }
 
 .contact-fallback .fallback-email i {
@@ -1160,11 +1161,18 @@ a {
   margin-bottom: 8px;
 }
 
+.footer-contact a,
 .footer-contact div,
 .footer-login-link {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.footer-contact a {
+  color: inherit;
+  text-decoration: none;
+  margin-bottom: 8px;
 }
 
 .footer-contact i,

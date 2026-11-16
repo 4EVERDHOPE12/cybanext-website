@@ -17,7 +17,10 @@ function createHandler(service = createApplicantAuthService()) {
         return res.status(401).json({ authenticated: false });
       }
 
-      return res.status(200).json({ authenticated: true });
+      return res.status(200).json({
+        authenticated: true,
+        applicationReference: session.registrationId || null
+      });
     } catch {
       console.error('Applicant session validation failed.');
       return res.status(503).json({
