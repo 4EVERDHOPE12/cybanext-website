@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const dashboardEndpoint = require('../api/applicant-dashboard');
+const applicantSessionEndpoint = require('../api/applicant-session');
 const {
   applicationStatusLabel,
   getApplicantDashboardData,
@@ -46,7 +46,7 @@ function createApplicant(overrides = {}) {
 
 test('unauthenticated dashboard requests return 401 without loading registration data', async () => {
   let lookupCount = 0;
-  const handler = dashboardEndpoint.createHandler(
+  const handler = applicantSessionEndpoint.createHandler(
     { async getSession() { return null; } },
     async () => {
       lookupCount += 1;
@@ -55,7 +55,11 @@ test('unauthenticated dashboard requests return 401 without loading registration
   );
   const response = createResponse();
 
-  await handler({ method: 'GET', headers: {} }, response);
+  await handler({
+    method: 'GET',
+    headers: {},
+    query: { includeDashboard: 'true' }
+  }, response);
 
   assert.equal(response.statusCode, 401);
   assert.deepEqual(response.body, { authenticated: false });
@@ -70,7 +74,7 @@ test('authenticated applicant receives dashboard data for the session registrati
       return { registrationId: 'DF-own-registration' };
     }
   };
-  const handler = dashboardEndpoint.createHandler(
+  const handler = applicantSessionEndpoint.createHandler(
     sessionService,
     async (registrationId) => {
       lookupIds.push(registrationId);
@@ -81,7 +85,8 @@ test('authenticated applicant receives dashboard data for the session registrati
 
   await handler({
     method: 'GET',
-    headers: { cookie: 'session-cookie' }
+    headers: { cookie: 'session-cookie' },
+    query: { includeDashboard: 'true' }
   }, response);
 
   assert.equal(response.statusCode, 200);
@@ -98,7 +103,7 @@ test('authenticated applicant receives dashboard data for the session registrati
 
 test('URL and request-body registration IDs cannot override session ownership', async () => {
   const lookupIds = [];
-  const handler = dashboardEndpoint.createHandler(
+  const handler = applicantSessionEndpoint.createHandler(
     {
       async getSession() {
         return { registrationId: 'DF-session-registration' };
@@ -114,7 +119,10 @@ test('URL and request-body registration IDs cannot override session ownership', 
   await handler({
     method: 'GET',
     headers: { 'x-registration-id': 'DF-attacker-header' },
-    query: { registrationId: 'DF-attacker-query' },
+    query: {
+      includeDashboard: 'true',
+      registrationId: 'DF-attacker-query'
+    },
     params: { registrationId: 'DF-attacker-params' },
     body: { registrationId: 'DF-attacker-body' }
   }, response);
@@ -126,25 +134,34 @@ test('URL and request-body registration IDs cannot override session ownership', 
 
 test('missing session registration and missing persisted registration are safely rejected', async (t) => {
   await t.test('missing session registration', async () => {
-    const handler = dashboardEndpoint.createHandler(
+    const handler = applicantSessionEndpoint.createHandler(
       { async getSession() { return {}; } },
       async () => assert.fail('registration lookup should not run')
     );
     const response = createResponse();
 
-    await handler({ method: 'GET', headers: {} }, response);
+    await handler({
+      method: 'GET',
+      headers: {},
+      query: { includeDashboard: 'true' }
+    }, response);
 
     assert.equal(response.statusCode, 401);
+    assert.deepEqual(response.body, { authenticated: false });
   });
 
   await t.test('missing persisted registration', async () => {
-    const handler = dashboardEndpoint.createHandler(
+    const handler = applicantSessionEndpoint.createHandler(
       { async getSession() { return { registrationId: 'DF-missing' }; } },
       async () => null
     );
     const response = createResponse();
 
-    await handler({ method: 'GET', headers: {} }, response);
+    await handler({
+      method: 'GET',
+      headers: {},
+      query: { includeDashboard: 'true' }
+    }, response);
 
     assert.equal(response.statusCode, 404);
     assert.equal(response.body.authenticated, true);
@@ -158,7 +175,7 @@ test('dashboard data lookup errors return a generic response without database de
   const errors = [];
   console.error = (...args) => errors.push(args);
   try {
-    const handler = dashboardEndpoint.createHandler(
+    const handler = applicantSessionEndpoint.createHandler(
       { async getSession() { return { registrationId: 'DF-own-registration' }; } },
       async () => {
         throw new Error('private database connection string');
@@ -166,7 +183,11 @@ test('dashboard data lookup errors return a generic response without database de
     );
     const response = createResponse();
 
-    await handler({ method: 'GET', headers: {} }, response);
+    await handler({
+      method: 'GET',
+      headers: {},
+      query: { includeDashboard: 'true' }
+    }, response);
 
     assert.equal(response.statusCode, 503);
     assert.equal(response.body.authenticated, false);

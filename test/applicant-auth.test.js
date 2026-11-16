@@ -381,6 +381,35 @@ test('logout endpoint clears the matching cookie and session endpoint rejects it
   assert.deepEqual(sessionResponse.body, { authenticated: false });
 });
 
+test('applicant session response remains unchanged without dashboard opt-in', async () => {
+  let dashboardLookups = 0;
+  const response = createResponse();
+  const service = {
+    async getSession(cookie) {
+      assert.equal(cookie, 'session-cookie');
+      return { registrationId: 'DF-test-registration' };
+    }
+  };
+
+  await getApplicantSession.createHandler(service, async () => {
+    dashboardLookups += 1;
+    return { registrationId: 'DF-test-registration' };
+  })({
+    method: 'GET',
+    headers: { cookie: 'session-cookie' },
+    query: { registrationId: 'DF-client-registration' },
+    body: { registrationId: 'DF-client-registration' }
+  }, response);
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.body, {
+    authenticated: true,
+    applicationReference: 'DF-test-registration'
+  });
+  assert.equal(response.headers['Cache-Control'], 'no-store');
+  assert.equal(dashboardLookups, 0);
+});
+
 test('logout endpoint requires POST and clears an invalid cookie without exposing session data', async () => {
   const { service } = createService({ isProduction: false });
   const getResponse = createResponse();

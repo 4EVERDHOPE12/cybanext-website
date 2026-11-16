@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 const test = require('node:test');
 const createRegistrationFormHandler =
   require('../digital-forensics-page');
@@ -15,6 +16,100 @@ const checkoutScriptPath = path.join(
 );
 const createPricingOptionHandler =
   createRegistrationFormHandler.createPricingOptionHandler;
+
+function createPaymentCheckoutHarness({ quotes, initialization } = {}) {
+  const elements = new Map();
+  const requests = [];
+  const sessionValues = new Map([
+    ['digitalForensicsRegistrationId', 'DF-123456'],
+    ['digitalForensicsApplicantName', 'Test Applicant'],
+    ['digitalForensicsApplicantEmail', 'applicant@example.com'],
+    ['digitalForensicsApplicantPhone', '+233201234567'],
+    ['selectedPricingOption', 'GHS']
+  ]);
+  let quoteIndex = 0;
+  const location = {
+    href: '',
+    replacedWith: null,
+    replace(value) {
+      this.replacedWith = value;
+    }
+  };
+
+  function getElement(id) {
+    if (!elements.has(id)) {
+      const listeners = new Map();
+      const classes = new Set();
+      elements.set(id, {
+        textContent: '',
+        innerHTML: '',
+        className: '',
+        style: {},
+        hidden: false,
+        disabled: false,
+        listeners,
+        classes,
+        classList: {
+          toggle(name, force) {
+            if (force) classes.add(name);
+            else classes.delete(name);
+          }
+        },
+        addEventListener(name, callback) {
+          listeners.set(name, callback);
+        },
+        click() {
+          const callback = listeners.get('click');
+          return callback ? callback() : undefined;
+        }
+      });
+    }
+    return elements.get(id);
+  }
+
+  const sandbox = {
+    document: { getElementById: getElement },
+    sessionStorage: {
+      getItem(key) {
+        return sessionValues.has(key) ? sessionValues.get(key) : null;
+      },
+      setItem(key, value) {
+        sessionValues.set(key, value);
+      }
+    },
+    window: { location },
+    fetch: async (url, options) => {
+      const body = JSON.parse(options.body);
+      requests.push({ url, options, body });
+      if (body.operation === 'quote') {
+        const quote = quotes[quoteIndex++];
+        return {
+          ok: true,
+          json: async () => quote
+        };
+      }
+      return {
+        ok: initialization.ok !== false,
+        json: async () => initialization.body || initialization
+      };
+    },
+    console: {
+      error() {},
+      warn() {}
+    }
+  };
+  const script = fs.readFileSync(checkoutScriptPath, 'utf8');
+  vm.runInNewContext(script, sandbox);
+
+  return {
+    elements,
+    location,
+    requests,
+    async settle() {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  };
+}
 
 function createFormHarness({
   isValid = true,
@@ -95,6 +190,8 @@ test('course page presents the approved overview, pricing, syllabus and registra
   );
 
   assert.match(homepage, /href="\.\/digital-forensics\.html" id="bannerDfApplyBtn"/);
+  assert.match(homepage, /<strong>GH₵1,500<\/strong>/);
+  assert.match(homepage, /<strong>US\$150<\/strong>/);
   assert.match(html, /Digital Forensics &amp; Incident Response/);
   assert.match(html, /href="#overview"[^>]*>Overview/);
   assert.match(html, /href="#syllabus"[^>]*>Syllabus/);
@@ -108,10 +205,11 @@ test('course page presents the approved overview, pricing, syllabus and registra
   assert.doesNotMatch(html, /Standalone Course|Book Your Seat|Book Your Course Seat/);
   assert.match(html, /Duration<\/span><strong>2 Months/);
   assert.match(html, /Schedule<\/span><strong>Saturdays &amp; Sundays/);
-  assert.match(html, /Cost \(Local\)<\/span><strong>GH₵1,200/);
-  assert.match(html, /Cost \(International\)<\/span><strong>\$120/);
-  assert.match(html, /class="df-course-price-card"[\s\S]*?Local Applicants[\s\S]*?GH₵ 1,200/);
-  assert.match(html, /class="df-course-price-card df-course-price-card-international"[\s\S]*?International Applicants[\s\S]*?\$120/);
+  assert.match(html, /Cost \(Local\)<\/span><strong>GH₵1,500/);
+  assert.match(html, /Cost \(International\)<\/span><strong>US\$150/);
+  assert.match(html, /class="df-course-price-card"[\s\S]*?Local Applicants[\s\S]*?GH₵ 1,500/);
+  assert.match(html, /class="df-course-price-card df-course-price-card-international"[\s\S]*?International Applicants[\s\S]*?US\$150/);
+  assert.doesNotMatch(`${homepage}\n${html}`, /GH₵\s*1,200|US?\$\s*120\b/);
   assert.equal((html.match(/<li>Full access to the course<\/li>/g) || []).length, 2);
   assert.equal((html.match(/<li>Hands-on practical sessions<\/li>/g) || []).length, 2);
   assert.equal((html.match(/<li>Certificate of completion<\/li>/g) || []).length, 2);
@@ -124,11 +222,194 @@ test('course page presents the approved overview, pricing, syllabus and registra
   assert.doesNotMatch(html, /id="applicationForm"|Formspree|id="cv"|name="track"|scan-cv/i);
 
   const script = fs.readFileSync(pageScriptPath, 'utf8');
+  const homepageScript = fs.readFileSync(
+    path.join(__dirname, '..', 'script.js'),
+    'utf8'
+  );
+  assert.match(homepageScript, /GH₵1,500 \(Local\) \/ US\$150 \(International\)/);
+  assert.match(homepageScript, /\/ US\$\$\{prices\.digitalForensics\.USD_REFERENCE\.referenceAmount\}/);
+  assert.doesNotMatch(homepageScript, /GH₵1,200|\$120/);
   assert.doesNotMatch(script, /scan-cv|formspree|qualificationToken|internship|id="cv"/i);
+  assert.match(
+    fs.readFileSync(checkoutScriptPath, 'utf8'),
+    /return `US\$/
+  );
   assert.match(
     fs.readFileSync(checkoutScriptPath, 'utf8'),
     /sessionStorage\.getItem\('selectedPricingOption'\) === 'USD_REFERENCE'/
   );
+});
+
+test('checkout displays current local and international server quotes and submits no client amount', async () => {
+  const localQuote = {
+    track: 'digital_forensics',
+    registrationId: 'DF-123456',
+    pricingOption: 'GHS',
+    referenceAmount: 1500,
+    referenceCurrency: 'GHS',
+    chargeAmountGhs: 1500,
+    paystackAmount: 150000,
+    currency: 'GHS',
+    exchangeRate: null,
+    existingRegistrationPrice: false,
+    pricingLocked: false,
+    canPay: true,
+    transactionStatus: null
+  };
+  const internationalQuote = {
+    ...localQuote,
+    pricingOption: 'USD_REFERENCE',
+    referenceAmount: 150,
+    referenceCurrency: 'USD',
+    chargeAmountGhs: 1732.5,
+    paystackAmount: 173250,
+    exchangeRate: 11.55
+  };
+  const harness = createPaymentCheckoutHarness({
+    quotes: [localQuote, internationalQuote],
+    initialization: {
+      authorizationUrl: 'https://checkout.paystack.test/authorize',
+      track: 'digital_forensics',
+      registrationId: 'DF-123456',
+      currency: 'GHS',
+      pricingOption: 'USD_REFERENCE',
+      referenceAmount: 150,
+      referenceCurrency: 'USD',
+      chargeAmountGhs: 1732.5,
+      paystackAmount: 173250,
+      exchangeRate: 11.55
+    }
+  });
+  await harness.settle();
+
+  assert.equal(
+    harness.elements.get('programPrice').textContent,
+    'GH₵1,500'
+  );
+  assert.equal(
+    harness.elements.get('totalAmount').textContent,
+    'GH₵1,500'
+  );
+  assert.equal(
+    harness.elements.get('programPriceLabel').textContent,
+    'Program Price (GHS)'
+  );
+
+  harness.elements.get('usdBtn').click();
+  await harness.settle();
+
+  assert.equal(
+    harness.elements.get('programPrice').textContent,
+    'US$150.00'
+  );
+  assert.equal(
+    harness.elements.get('totalAmount').textContent,
+    'GH₵1,732.50'
+  );
+  assert.equal(
+    harness.elements.get('totalAmountLabel').textContent,
+    'GHS Charged by Paystack'
+  );
+  assert.match(
+    harness.elements.get('conversionNote').textContent,
+    /1 USD = GH₵11\.55/
+  );
+
+  await harness.elements.get('payNowBtn').click();
+  const initializationRequest = harness.requests[2];
+  assert.equal(
+    initializationRequest.url,
+    '/api/initialize-digital-forensics-payment'
+  );
+  assert.equal(initializationRequest.body.expectedQuote.paystackAmount, 173250);
+  assert.equal(Object.hasOwn(initializationRequest.body, 'amount'), false);
+  assert.equal(
+    harness.location.href,
+    'https://checkout.paystack.test/authorize'
+  );
+});
+
+test('checkout displays the preserved legacy international reference and charge', async () => {
+  const legacyQuote = {
+    track: 'digital_forensics',
+    registrationId: 'DF-123456',
+    pricingOption: 'USD_REFERENCE',
+    referenceAmount: 120,
+    referenceCurrency: 'USD',
+    chargeAmountGhs: 1386,
+    paystackAmount: 138600,
+    currency: 'GHS',
+    exchangeRate: 11.55,
+    existingRegistrationPrice: true,
+    pricingLocked: false,
+    canPay: true,
+    transactionStatus: null
+  };
+  const harness = createPaymentCheckoutHarness({
+    quotes: [legacyQuote]
+  });
+  harness.elements.get('usdBtn').disabled = false;
+  await harness.settle();
+
+  assert.equal(
+    harness.elements.get('programPrice').textContent,
+    'US$120.00'
+  );
+  assert.equal(
+    harness.elements.get('totalAmount').textContent,
+    'GH₵1,386.00'
+  );
+  assert.match(
+    harness.elements.get('conversionNote').textContent,
+    /original price is being retained/
+  );
+  assert.equal(harness.elements.get('payNowBtn').disabled, false);
+});
+
+test('checkout reports a newly pending attempt instead of claiming the price changed', async () => {
+  const quote = {
+    track: 'digital_forensics',
+    registrationId: 'DF-123456',
+    pricingOption: 'GHS',
+    referenceAmount: 1500,
+    referenceCurrency: 'GHS',
+    chargeAmountGhs: 1500,
+    paystackAmount: 150000,
+    currency: 'GHS',
+    exchangeRate: null,
+    existingRegistrationPrice: false,
+    pricingLocked: true,
+    canPay: true,
+    transactionStatus: null
+  };
+  const pendingQuote = {
+    ...quote,
+    canPay: false,
+    transactionStatus: 'pending'
+  };
+  const harness = createPaymentCheckoutHarness({
+    quotes: [quote],
+    initialization: {
+      ok: false,
+      body: {
+        error: 'A previous payment attempt is still being processed.',
+        quote: pendingQuote
+      }
+    }
+  });
+  await harness.settle();
+  await harness.elements.get('payNowBtn').click();
+
+  assert.equal(harness.elements.get('payNowBtn').disabled, true);
+  assert.match(
+    harness.elements.get('paymentMessage').textContent,
+    /previous payment is still processing/
+  );
+  assert.doesNotMatch(
+    harness.elements.get('paymentMessage').textContent,
+    /price changed/
+  );
+  assert.equal(harness.location.href, '');
 });
 
 test('pricing actions save the selected option using the checkout session key', () => {

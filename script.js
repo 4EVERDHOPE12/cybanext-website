@@ -76,7 +76,7 @@ if (regularTrackPriceNote || digitalForensicsPrice) {
 
       if (digitalForensicsPrice) {
         digitalForensicsPrice.textContent =
-          `GH₵${formatGhs(prices.digitalForensics.GHS.chargeAmountGhs)} (Local) / $${prices.digitalForensics.USD_REFERENCE.referenceAmount} (International)`;
+          `GH₵${formatGhs(prices.digitalForensics.GHS.chargeAmountGhs)} (Local) / US$${prices.digitalForensics.USD_REFERENCE.referenceAmount} (International)`;
       }
     })
     .catch((error) => {
@@ -87,7 +87,7 @@ if (regularTrackPriceNote || digitalForensicsPrice) {
       }
       if (digitalForensicsPrice) {
         digitalForensicsPrice.textContent =
-          'GH₵1,200 (Local) / $120 (International)';
+          'GH₵1,500 (Local) / US$150 (International)';
       }
     });
 }

@@ -224,7 +224,7 @@
 
   async function ensureAuthenticated() {
     try {
-      const response = await fetch('/api/applicant-dashboard', {
+      const response = await fetch('/api/applicant-session?includeDashboard=true', {
         headers: { Accept: 'application/json' },
         cache: 'no-store'
       });

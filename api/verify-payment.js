@@ -1,5 +1,5 @@
-const https = require('https');
 const { getPaymentPrice } = require('../lib/payment-prices');
+const { verifyPaystackTransaction } = require('../lib/paystack-client');
 const { verifyQualificationToken } = require('../lib/qualification-token');
 const { getPaystackSecretKeyMode } = require('../lib/paystack-secret-key');
 const {
@@ -8,48 +8,6 @@ const {
 } = require('../lib/digital-forensics-store');
 const regularPaymentStore = require('../lib/regular-track-payment-store');
 const { attemptImmediateDelivery } = require('../lib/email-notification-outbox');
-
-function verifyPaystackTransaction(reference) {
-  return new Promise((resolve, reject) => {
-    const request = https.request(
-      {
-        hostname: 'api.paystack.co',
-        path: `/transaction/verify/${encodeURIComponent(reference)}`,
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`
-        }
-      },
-      (response) => {
-        let body = '';
-        response.on('data', (chunk) => {
-          body += chunk;
-        });
-        response.on('end', () => {
-          try {
-            const result = JSON.parse(body);
-
-            if (response.statusCode >= 400 || !result.status || !result.data) {
-              return reject(new Error(
-                result.message || 'Paystack verification failed.'
-              ));
-            }
-
-            resolve(result);
-          } catch (error) {
-            reject(new Error('Invalid response received from Paystack.'));
-          }
-        });
-      }
-    );
-
-    request.on('error', reject);
-    request.setTimeout(15000, () => {
-      request.destroy(new Error('Paystack verification timed out.'));
-    });
-    request.end();
-  });
-}
 
 function parseMetadata(metadata) {
   if (typeof metadata === 'string') {

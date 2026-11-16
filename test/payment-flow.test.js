@@ -633,6 +633,80 @@ function stubPaystackRequest(t, responseData, statusCode = 200) {
   };
 }
 
+function stubPaystackSequence(t, responses) {
+  const originalRequest = https.request;
+  const calls = [];
+
+  https.request = (options, callback) => {
+    let requestBody = '';
+    const request = new EventEmitter();
+    request.write = (chunk) => {
+      requestBody += chunk;
+    };
+    request.setTimeout = () => {};
+    request.destroy = (error) => request.emit('error', error);
+    request.end = () => {
+      const call = {
+        options,
+        body: requestBody ? JSON.parse(requestBody) : null
+      };
+      calls.push(call);
+      const scripted = responses[calls.length - 1];
+      const response = new EventEmitter();
+      const scriptedResult = typeof scripted === 'function'
+        ? scripted(call)
+        : scripted;
+      response.statusCode = scriptedResult.statusCode || 200;
+      callback(response);
+      process.nextTick(() => {
+        if (scriptedResult.error) {
+          request.emit('error', scriptedResult.error);
+          return;
+        }
+        response.emit(
+          'data',
+          Buffer.from(JSON.stringify(scriptedResult.response))
+        );
+        response.emit('end');
+      });
+    };
+    return request;
+  };
+
+  t.after(() => {
+    https.request = originalRequest;
+  });
+
+  return { calls };
+}
+
+function existingUsdAttemptResponse(registration, status = 'failed') {
+  const amount = Math.round(Number(registration.expectedAmount) * 100);
+  return {
+    response: {
+      status: true,
+      data: {
+        status,
+        reference: registration.paymentReference,
+        currency: registration.expectedCurrency,
+        amount,
+        customer: { email: registration.email },
+        metadata: {
+          track: 'digital_forensics',
+          registration_id: registration.id,
+          pricing_option: 'USD_REFERENCE',
+          reference_currency: 'USD',
+          reference_amount: 120,
+          exchange_rate: 11.55,
+          charge_currency: 'GHS',
+          charge_amount_ghs: 1386,
+          paystack_amount: amount
+        }
+      }
+    }
+  };
+}
+
 function stubPaystackError(t, error = new Error('Paystack unavailable.')) {
   const originalRequest = https.request;
   https.request = () => {
@@ -685,7 +759,7 @@ test('Digital Forensics registration records can be created, found, and updated'
     source: 'digital_forensics_standalone'
   });
   assert.equal(registration.course, 'digital_forensics');
-  assert.equal(registration.expectedAmount, 1200);
+  assert.equal(registration.expectedAmount, 1500);
   await assert.rejects(
     digitalForensicsStore.createRegistration({
       fullName: 'No Phone Applicant',
@@ -796,18 +870,20 @@ test('central prices use GHS pesewas and both payment channels', () => {
   }
 
   const local = getPaymentPrice('digital_forensics', 'GHS');
-  assert.equal(local.chargeAmountGhs, 1200);
-  assert.equal(local.paystackAmount, 120000);
+  assert.equal(local.referenceAmount, 1500);
+  assert.equal(local.chargeAmountGhs, 1500);
+  assert.equal(local.paystackAmount, 150000);
   assert.equal(local.paystackCurrency, 'GHS');
   assert.deepEqual(local.channels, ['card', 'mobile_money']);
 
   const international =
     getPaymentPrice('digital_forensics', 'USD_REFERENCE');
-  assert.equal(international.referenceAmount, 120);
+  assert.equal(international.referenceAmount, 150);
   assert.equal(international.referenceCurrency, 'USD');
-  assert.equal(international.chargeAmountGhs, 1386);
-  assert.equal(international.paystackAmount, 138600);
+  assert.equal(international.chargeAmountGhs, 1732.5);
+  assert.equal(international.paystackAmount, 173250);
   assert.equal(international.paystackCurrency, 'GHS');
+  assert.equal(international.exchangeRate, 11.55);
 });
 
 test('price lookup rejects unknown tracks and prototype properties', () => {
@@ -887,14 +963,23 @@ test('legacy pricing rewrite rejects unsupported methods', () => {
   assert.equal(initializeGetResponse.statusCode, 405);
 });
 
-test('frontends continue using the public legacy pricing URL', () => {
-  for (const file of [
-    '../script.js',
-    '../payment/digital-forensics-payment.js'
-  ]) {
-    const source = fs.readFileSync(require.resolve(file), 'utf8');
-    assert.match(source, /fetch\(['"]\/api\/payment-prices['"]\)/);
-  }
+test('public pricing remains shared while checkout requests a registration-specific quote', () => {
+  const homepageScript = fs.readFileSync(
+    require.resolve('../script.js'),
+    'utf8'
+  );
+  const checkoutScript = fs.readFileSync(
+    require.resolve('../payment/digital-forensics-payment.js'),
+    'utf8'
+  );
+
+  assert.match(homepageScript, /fetch\(['"]\/api\/payment-prices['"]\)/);
+  assert.match(
+    checkoutScript,
+    /fetch\(['"]\/api\/initialize-digital-forensics-payment['"]/
+  );
+  assert.match(checkoutScript, /operation:\s*'quote'/);
+  assert.doesNotMatch(checkoutScript, /fetch\(['"]\/api\/payment-prices['"]\)/);
 });
 
 test('qualification tokens are signed, applicant-bound, and tamper evident', () => {
@@ -1102,15 +1187,15 @@ test('payment handlers accept TEST and LIVE keys and fail closed for invalid con
 });
 
 test('Digital Forensics endpoint selects local or reference price server-side', async (t) => {
-  withFakeDigitalForensicsDatabase(t);
-  const paystack = stubPaystackRequest(t, {
+  const { registrations } = withFakeDigitalForensicsDatabase(t);
+  const paystack = stubPaystackRequest(t, (body) => ({
     status: true,
     data: {
       authorization_url: 'https://checkout.paystack.test/authorize',
       access_code: 'access-code',
-      reference: 'CYB-234567-ABCDEF'
+      reference: body.reference
     }
-  });
+  }));
   const response = createResponse();
 
   const { createRegistration } = require('../lib/digital-forensics-store');
@@ -1130,10 +1215,14 @@ test('Digital Forensics endpoint selects local or reference price server-side', 
   }, response);
 
   assert.equal(response.statusCode, 200);
-  assert.equal(paystack.body.amount, 138600);
+  assert.equal(paystack.body.amount, 173250);
   assert.equal(paystack.body.currency, 'GHS');
   assert.deepEqual(paystack.body.channels, ['card', 'mobile_money']);
   assert.equal(paystack.body.metadata.pricing_option, 'USD_REFERENCE');
+  assert.equal(paystack.body.metadata.reference_amount, 150);
+  assert.equal(paystack.body.metadata.charge_amount_ghs, 1732.5);
+  assert.equal(registrations.get(registration.id).expectedAmount, 1732.5);
+  assert.equal(registrations.get(registration.id).pricingOption, 'USD_REFERENCE');
 });
 
 test('Digital Forensics registration flow requires a valid registration ID and blocks token-only attempts', async (t) => {
@@ -1173,14 +1262,14 @@ test('Digital Forensics registration flow requires a valid registration ID and b
   }, tokenOnlyResponse);
   assert.equal(tokenOnlyResponse.statusCode, 400);
 
-  const paystack = stubPaystackRequest(t, {
+  const paystack = stubPaystackRequest(t, (body) => ({
     status: true,
     data: {
       authorization_url: 'https://checkout.paystack.test/authorize',
       access_code: 'access-code',
-      reference: 'CYB-246810-ABCDEF'
+      reference: body.reference
     }
-  });
+  }));
   const successResponse = createResponse();
 
   await initializeDigitalForensicsPayment({
@@ -1193,21 +1282,436 @@ test('Digital Forensics registration flow requires a valid registration ID and b
   }, successResponse);
 
   assert.equal(successResponse.statusCode, 200);
-  assert.equal(paystack.body.amount, 120000);
+  assert.equal(paystack.body.amount, 150000);
   assert.equal(paystack.body.currency, 'GHS');
   assert.equal(paystack.body.metadata.registration_id, registration.id);
 });
 
-test('Digital Forensics local option initializes exactly GH₵1,200 in GHS pesewas', async (t) => {
+test('existing Digital Forensics registrations keep their persisted local price', async (t) => {
+  const { registrations } = withFakeDigitalForensicsDatabase(t);
+  const { createRegistration } = require('../lib/digital-forensics-store');
+  const registration = await createRegistration({
+    fullName: 'Existing Applicant',
+    email: 'existing@example.com',
+    phone: '+233201234570'
+  });
+  registrations.get(registration.id).expectedAmount = 1200;
+
+  const paystack = stubPaystackRequest(t, (body) => ({
+    status: true,
+    data: {
+      authorization_url: 'https://checkout.paystack.test/authorize',
+      access_code: 'access-code',
+      reference: body.reference
+    }
+  }));
+  const response = createResponse();
+
+  await initializeDigitalForensicsPayment({
+    method: 'POST',
+    body: {
+      registrationId: registration.id,
+      email: registration.email,
+      pricingOption: 'GHS'
+    }
+  }, response);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(paystack.body.amount, 120000);
+  assert.equal(paystack.body.metadata.charge_amount_ghs, 1200);
+  assert.equal(
+    (await digitalForensicsStore.findRegistration(registration.id)).expectedAmount,
+    1200
+  );
+  assert.equal(response.body.existingRegistrationPrice, true);
+});
+
+test('existing Digital Forensics registrations retain their international reference price', async (t) => {
+  const { registrations } = withFakeDigitalForensicsDatabase(t);
+  const { createRegistration } = require('../lib/digital-forensics-store');
+  const registration = await createRegistration({
+    fullName: 'Existing International Applicant',
+    email: 'existing-international@example.com',
+    phone: '+233201234571'
+  });
+  registrations.get(registration.id).expectedAmount = 1200;
+
+  const paystack = stubPaystackRequest(t, (body) => ({
+    status: true,
+    data: {
+      authorization_url: 'https://checkout.paystack.test/authorize',
+      access_code: 'access-code',
+      reference: body.reference
+    }
+  }));
+  const response = createResponse();
+
+  await initializeDigitalForensicsPayment({
+    method: 'POST',
+    body: {
+      registrationId: registration.id,
+      email: registration.email,
+      pricingOption: 'USD_REFERENCE'
+    }
+  }, response);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(paystack.body.amount, 138600);
+  assert.equal(paystack.body.currency, 'GHS');
+  assert.equal(paystack.body.metadata.reference_amount, 120);
+  assert.equal(paystack.body.metadata.charge_amount_ghs, 1386);
+  assert.equal(response.body.existingRegistrationPrice, true);
+});
+
+test('Digital Forensics payment quotes return the server-assigned new prices without modifying registrations', async (t) => {
+  const { registrations } = withFakeDigitalForensicsDatabase(t);
+  const { createRegistration } = require('../lib/digital-forensics-store');
+  const registration = await createRegistration({
+    fullName: 'New Applicant',
+    email: 'new-applicant@example.com',
+    phone: '+233201234572'
+  });
+
+  const localResponse = createResponse();
+  await initializeDigitalForensicsPayment({
+    method: 'POST',
+    body: {
+      operation: 'quote',
+      registrationId: registration.id,
+      email: registration.email,
+      pricingOption: 'GHS'
+    }
+  }, localResponse);
+
+  assert.equal(localResponse.statusCode, 200);
+  assert.equal(localResponse.body.referenceAmount, 1500);
+  assert.equal(localResponse.body.chargeAmountGhs, 1500);
+  assert.equal(localResponse.body.paystackAmount, 150000);
+  assert.equal(localResponse.body.pricingLocked, false);
+
+  const internationalResponse = createResponse();
+  await initializeDigitalForensicsPayment({
+    method: 'POST',
+    body: {
+      operation: 'quote',
+      registrationId: registration.id,
+      email: registration.email,
+      pricingOption: 'USD_REFERENCE'
+    }
+  }, internationalResponse);
+
+  assert.equal(internationalResponse.statusCode, 200);
+  assert.equal(internationalResponse.body.referenceAmount, 150);
+  assert.equal(internationalResponse.body.referenceCurrency, 'USD');
+  assert.equal(internationalResponse.body.chargeAmountGhs, 1732.5);
+  assert.equal(internationalResponse.body.paystackAmount, 173250);
+  assert.equal(internationalResponse.body.exchangeRate, 11.55);
+  assert.equal(registrations.get(registration.id).status, 'pending');
+  assert.equal(registrations.get(registration.id).paymentReference, null);
+});
+
+test('Digital Forensics quote preserves an existing uninitialized legacy international price', async (t) => {
+  const { registrations } = withFakeDigitalForensicsDatabase(t);
+  const { createRegistration } = require('../lib/digital-forensics-store');
+  const registration = await createRegistration({
+    fullName: 'Legacy Applicant',
+    email: 'legacy@example.com',
+    phone: '+233201234573'
+  });
+  registrations.get(registration.id).expectedAmount = 1200;
+
+  const response = createResponse();
+  await initializeDigitalForensicsPayment({
+    method: 'POST',
+    body: {
+      operation: 'quote',
+      registrationId: registration.id,
+      email: registration.email,
+      pricingOption: 'USD_REFERENCE'
+    }
+  }, response);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.referenceAmount, 120);
+  assert.equal(response.body.chargeAmountGhs, 1386);
+  assert.equal(response.body.paystackAmount, 138600);
+  assert.equal(response.body.existingRegistrationPrice, true);
+  assert.equal(response.body.pricingLocked, false);
+});
+
+test('an initialized international price retains its reference amount and rate after configuration changes', async (t) => {
+  const { registrations } = withFakeDigitalForensicsDatabase(t);
+  const { createRegistration } = require('../lib/digital-forensics-store');
+  const registration = await createRegistration({
+    fullName: 'Rate Change Applicant',
+    email: 'rate-change@example.com',
+    phone: '+233201234574'
+  });
+  Object.assign(registrations.get(registration.id), {
+    status: 'payment_failed',
+    paymentReference: 'DF-OLD-INT-345678',
+    pricingOption: 'USD_REFERENCE',
+    expectedAmount: 1386
+  });
+
+  const paymentPricesPath = require.resolve('../lib/payment-prices');
+  const initializerPath = require.resolve('../api/initialize-digital-forensics-payment');
+  const originalPricesModule = require.cache[paymentPricesPath];
+  const originalInitializerModule = require.cache[initializerPath];
+  const originalRate = process.env.USD_GHS_RATE;
+  const priorAttempt = existingUsdAttemptResponse(registrations.get(registration.id));
+  const requests = stubPaystackSequence(t, [
+    priorAttempt,
+    priorAttempt,
+    (call) => ({
+      response: {
+        status: true,
+        data: {
+          authorization_url: 'https://checkout.paystack.test/authorize',
+          reference: call.body.reference
+        }
+      }
+    })
+  ]);
+
+  process.env.USD_GHS_RATE = '12.5';
+  delete require.cache[paymentPricesPath];
+  delete require.cache[initializerPath];
+  const initializeAtNewRate = require(initializerPath);
+
+  try {
+    const quoteResponse = createResponse();
+    await initializeAtNewRate({
+      method: 'POST',
+      body: {
+        operation: 'quote',
+        registrationId: registration.id,
+        email: registration.email,
+        pricingOption: 'USD_REFERENCE'
+      }
+    }, quoteResponse);
+
+    assert.equal(quoteResponse.statusCode, 200);
+    assert.equal(quoteResponse.body.referenceAmount, 120);
+    assert.equal(quoteResponse.body.exchangeRate, 11.55);
+    assert.equal(quoteResponse.body.chargeAmountGhs, 1386);
+    assert.equal(quoteResponse.body.paystackAmount, 138600);
+    assert.equal(quoteResponse.body.existingRegistrationPrice, true);
+
+    const initResponse = createResponse();
+    await initializeAtNewRate({
+      method: 'POST',
+      body: {
+        registrationId: registration.id,
+        email: registration.email,
+        pricingOption: 'USD_REFERENCE',
+        expectedQuote: quoteResponse.body,
+        amount: 1,
+        currency: 'USD'
+      }
+    }, initResponse);
+
+    assert.equal(initResponse.statusCode, 200);
+    assert.equal(requests.calls.length, 3);
+    assert.equal(requests.calls[0].options.method, 'GET');
+    assert.equal(requests.calls[1].options.method, 'GET');
+    assert.equal(requests.calls[2].body.amount, 138600);
+    assert.equal(requests.calls[2].body.currency, 'GHS');
+    assert.equal(requests.calls[2].body.metadata.reference_amount, 120);
+    assert.equal(requests.calls[2].body.metadata.exchange_rate, 11.55);
+    assert.equal(
+      (await digitalForensicsStore.findRegistration(registration.id)).expectedAmount,
+      1386
+    );
+  } finally {
+    process.env.USD_GHS_RATE = originalRate;
+    require.cache[paymentPricesPath] = originalPricesModule;
+    require.cache[initializerPath] = originalInitializerModule;
+  }
+});
+
+test('a pending international Paystack attempt cannot be mistaken for a failed attempt', async (t) => {
+  const { registrations } = withFakeDigitalForensicsDatabase(t);
+  const { createRegistration } = require('../lib/digital-forensics-store');
+  const registration = await createRegistration({
+    fullName: 'Pending Applicant',
+    email: 'pending@example.com',
+    phone: '+233201234577'
+  });
+  Object.assign(registrations.get(registration.id), {
+    status: 'payment_initiated',
+    paymentReference: 'DF-PENDING-345678',
+    pricingOption: 'USD_REFERENCE',
+    expectedAmount: 1386
+  });
+  const pendingAttempt = existingUsdAttemptResponse(
+    registrations.get(registration.id),
+    'pending'
+  );
+  const paystack = stubPaystackSequence(t, [
+    pendingAttempt,
+    pendingAttempt
+  ]);
+  const quoteResponse = createResponse();
+
+  await initializeDigitalForensicsPayment({
+    method: 'POST',
+    body: {
+      operation: 'quote',
+      registrationId: registration.id,
+      email: registration.email,
+      pricingOption: 'USD_REFERENCE'
+    }
+  }, quoteResponse);
+
+  assert.equal(quoteResponse.statusCode, 200);
+  assert.equal(quoteResponse.body.canPay, false);
+  assert.equal(quoteResponse.body.transactionStatus, 'pending');
+
+  const initResponse = createResponse();
+  await initializeDigitalForensicsPayment({
+    method: 'POST',
+    body: {
+      registrationId: registration.id,
+      email: registration.email,
+      pricingOption: 'USD_REFERENCE',
+      expectedQuote: quoteResponse.body
+    }
+  }, initResponse);
+
+  assert.equal(initResponse.statusCode, 409);
+  assert.equal(paystack.calls.length, 2);
+  assert.ok(paystack.calls.every((call) => call.options.method === 'GET'));
+});
+
+test('a confirmed Paystack rejection restores the previous historical registration price', async (t) => {
+  const { registrations } = withFakeDigitalForensicsDatabase(t);
+  const { createRegistration } = require('../lib/digital-forensics-store');
+  const registration = await createRegistration({
+    fullName: 'Legacy Retry Applicant',
+    email: 'legacy-retry@example.com',
+    phone: '+233201234578'
+  });
+  Object.assign(registrations.get(registration.id), {
+    status: 'payment_failed',
+    paymentReference: 'DF-LEGACY-RETRY-345678',
+    pricingOption: 'USD_REFERENCE',
+    expectedAmount: 1386
+  });
+  const requests = stubPaystackSequence(t, [
+    existingUsdAttemptResponse(registrations.get(registration.id)),
+    {
+      statusCode: 400,
+      response: { status: false, message: 'Invalid amount.' }
+    }
+  ]);
+  const response = createResponse();
+
+  await initializeDigitalForensicsPayment({
+    method: 'POST',
+    body: {
+      registrationId: registration.id,
+      email: registration.email,
+      pricingOption: 'USD_REFERENCE'
+    }
+  }, response);
+
+  assert.equal(response.statusCode, 502);
+  assert.equal(requests.calls.length, 2);
+  assert.equal(requests.calls[1].options.method, 'POST');
+  const restored =
+    await digitalForensicsStore.findRegistration(registration.id);
+  assert.equal(restored.status, 'payment_failed');
+  assert.equal(restored.paymentReference, 'DF-LEGACY-RETRY-345678');
+  assert.equal(restored.expectedAmount, 1386);
+  assert.equal(restored.pricingOption, 'USD_REFERENCE');
+});
+
+test('Digital Forensics initialization does not trust client-supplied amounts', async (t) => {
+  const { registrations } = withFakeDigitalForensicsDatabase(t);
+  const paystack = stubPaystackRequest(t, (body) => ({
+    status: true,
+    data: {
+      authorization_url: 'https://checkout.paystack.test/authorize',
+      reference: body.reference
+    }
+  }));
+  const { createRegistration } = require('../lib/digital-forensics-store');
+  const registration = await createRegistration({
+    fullName: 'Amount Manipulation Applicant',
+    email: 'amount@example.com',
+    phone: '+233201234575'
+  });
+  const response = createResponse();
+
+  await initializeDigitalForensicsPayment({
+    method: 'POST',
+    body: {
+      registrationId: registration.id,
+      email: registration.email,
+      pricingOption: 'GHS',
+      amount: 1,
+      expectedAmount: 1,
+      currency: 'USD',
+      price: 1
+    }
+  }, response);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(paystack.body.amount, 150000);
+  assert.equal(paystack.body.currency, 'GHS');
+  assert.equal(registrations.get(registration.id).expectedAmount, 1500);
+});
+
+test('Digital Forensics initialization rejects stale client quotes before starting payment', async (t) => {
   withFakeDigitalForensicsDatabase(t);
   const paystack = stubPaystackRequest(t, {
     status: true,
     data: {
       authorization_url: 'https://checkout.paystack.test/authorize',
-      access_code: 'access-code',
-      reference: 'CYB-246810-ABCDEF'
+      reference: 'DF-SHOULD-NOT-START'
     }
   });
+  const { createRegistration } = require('../lib/digital-forensics-store');
+  const registration = await createRegistration({
+    fullName: 'Stale Quote Applicant',
+    email: 'stale-quote@example.com',
+    phone: '+233201234576'
+  });
+  const response = createResponse();
+
+  await initializeDigitalForensicsPayment({
+    method: 'POST',
+    body: {
+      registrationId: registration.id,
+      email: registration.email,
+      pricingOption: 'GHS',
+      expectedQuote: {
+        pricingOption: 'GHS',
+        referenceAmount: 1,
+        referenceCurrency: 'GHS',
+        chargeAmountGhs: 1,
+        paystackAmount: 100,
+        exchangeRate: null
+      }
+    }
+  }, response);
+
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.body.quote.referenceAmount, 1500);
+  assert.equal(paystack.options, undefined);
+});
+
+test('Digital Forensics local option initializes exactly GH₵1,500 in GHS pesewas', async (t) => {
+  withFakeDigitalForensicsDatabase(t);
+  const paystack = stubPaystackRequest(t, (body) => ({
+    status: true,
+    data: {
+      authorization_url: 'https://checkout.paystack.test/authorize',
+      access_code: 'access-code',
+      reference: body.reference
+    }
+  }));
   const response = createResponse();
 
   const { createRegistration } = require('../lib/digital-forensics-store');
@@ -1227,7 +1731,10 @@ test('Digital Forensics local option initializes exactly GH₵1,200 in GHS pesew
       body: {
         registrationId: registration.id,
         email: 'local@example.com',
-        pricingOption: 'GHS'
+        pricingOption: 'GHS',
+        amount: 1,
+        expectedAmount: 1,
+        currency: 'USD'
       }
     }, response);
   } finally {
@@ -1236,9 +1743,11 @@ test('Digital Forensics local option initializes exactly GH₵1,200 in GHS pesew
 
   assert.equal(response.statusCode, 200);
   assert.equal(paystack.options.headers.Authorization, `Bearer ${liveKey}`);
-  assert.equal(paystack.body.amount, 120000);
+  assert.equal(paystack.body.amount, 150000);
   assert.equal(paystack.body.currency, 'GHS');
-  assert.equal(paystack.body.metadata.charge_amount_ghs, 1200);
+  assert.equal(paystack.body.metadata.charge_amount_ghs, 1500);
+  assert.equal(paystack.body.metadata.reference_amount, 1500);
+  assert.equal((await digitalForensicsStore.findRegistration(registration.id)).expectedAmount, 1500);
 });
 
 test('regular payment initialization persists and activates a payment attempt', async (t) => {
@@ -1755,7 +2264,7 @@ test('Digital Forensics verification associates and conditionally marks the pers
     status: 'success',
     reference,
     currency: 'GHS',
-    amount: 120000,
+    amount: 150000,
     customer: { email: 'course@example.com' },
     metadata: {
       track: 'digital_forensics',
@@ -1774,6 +2283,7 @@ test('Digital Forensics verification associates and conditionally marks the pers
     await digitalForensicsStore.findRegistration(registration.id);
   assert.equal(savedRegistration.status, 'payment_verified');
   assert.equal(savedRegistration.paymentReference, reference);
+  assert.equal(savedRegistration.expectedAmount, 1500);
   assert.equal(savedRegistration.verifiedTransactionId, transaction.id);
   assert.ok(savedRegistration.paymentVerificationTimestamp);
   assert.equal(smsNotifications.size, 1);
@@ -1852,7 +2362,7 @@ test('Digital Forensics verification does not report success when the database p
       status: 'success',
       reference,
       currency: 'GHS',
-      amount: 120000,
+      amount: 150000,
       customer: { email: 'course@example.com' },
       metadata: {
         track: 'digital_forensics',
@@ -1923,7 +2433,7 @@ test('Digital Forensics verification rejects a wrong currency without marking pa
       status: 'success',
       reference,
       currency: 'USD',
-      amount: 120000,
+      amount: 150000,
       customer: { email: 'course@example.com' },
       metadata: {
         track: 'digital_forensics',
@@ -1959,7 +2469,7 @@ test('Digital Forensics verification rejects a Paystack reference not recorded f
       status: 'success',
       reference: transactionReference,
       currency: 'GHS',
-      amount: 120000,
+      amount: 150000,
       customer: { email: 'course@example.com' },
       metadata: {
         track: 'digital_forensics',
