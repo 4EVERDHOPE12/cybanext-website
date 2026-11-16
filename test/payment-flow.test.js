@@ -1546,6 +1546,7 @@ test('regular failed payment is persisted without affecting a verified attempt',
 
   assert.equal(response.statusCode, 400);
   assert.equal(response.body.verified, false);
+  assert.equal(response.body.transactionStatus, 'failed');
   assert.equal(attempts.get(reference).status, 'failed');
   assert.equal(
     notifications.get(
@@ -1586,6 +1587,10 @@ for (const status of ['pending', 'unknown']) {
     await verifyPayment({ method: 'POST', body: { reference } }, response);
 
     assert.equal(response.statusCode, 400);
+    assert.equal(
+      response.body.transactionStatus,
+      status === 'pending' ? 'pending' : 'unknown'
+    );
     assert.equal(response.body.verified, false);
     assert.equal(attempts.get(reference).status, 'payment_initiated');
     assert.equal(

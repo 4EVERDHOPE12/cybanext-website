@@ -86,6 +86,16 @@
             </a>
 
             <a
+                href="../applicant-dashboard.html"
+                class="error-home-btn success-page-home-button"
+                id="dashboardButton"
+                style="display:none;"
+            >
+                Return to Applicant Dashboard
+                <i class="ti ti-layout-dashboard"></i>
+            </a>
+
+            <a
                 href="./failed.html"
                 class="dfir-pay-button"
                 id="retryPaymentButton"
@@ -142,6 +152,9 @@
     const retryPaymentButton =
         document.getElementById('retryPaymentButton');
 
+    const dashboardButton =
+        document.getElementById('dashboardButton');
+
     nameElement.textContent =
         applicantName || 'Applicant';
 
@@ -152,7 +165,7 @@
         reference || 'Unavailable';
 
     if (!reference) {
-        titleElement.textContent = 'Payment Could Not Be Verified';
+        titleElement.textContent = 'Payment Not Confirmed';
         messageElement.textContent =
             'No Paystack payment reference was returned. Your registration has not been confirmed.';
         iconElement.innerHTML =
@@ -161,6 +174,7 @@
             '<i class="ti ti-alert-triangle"></i><p>Please return to the payment page and try again.</p>';
         homeButton.style.display = 'inline-flex';
         retryPaymentButton.style.display = 'inline-flex';
+        dashboardButton.style.display = 'inline-flex';
         return;
     }
 
@@ -184,44 +198,72 @@
             throw new Error('Invalid verification response.');
         }
 
-        if (!response.ok || !result.verified) {
-            throw new Error(
-                result.error ||
-                'Your payment could not be verified.'
-            );
+        if (response.ok && result.verified === true) {
+            titleElement.textContent =
+                'Payment Successful';
+
+            messageElement.textContent =
+                'Your payment has been successfully verified. Our team will reach out within 2 business days to confirm your seat and share your class schedule.';
+
+            iconElement.innerHTML =
+                '<i class="ti ti-circle-check"></i>';
+
+            noteElement.innerHTML =
+                '<i class="ti ti-info-circle"></i><p>Return to your dashboard to view the latest payment status from your account.</p>';
+
+            homeButton.style.display = 'inline-flex';
+            dashboardButton.style.display = 'inline-flex';
+            return;
         }
 
-        titleElement.textContent =
-            'Payment Successful';
+        if (result.transactionStatus === 'pending') {
+            titleElement.textContent = 'Payment Verification Pending';
+            messageElement.textContent =
+                'Paystack has not completed this transaction yet. Your registration has not been confirmed.';
+            iconElement.innerHTML =
+                '<i class="ti ti-clock"></i>';
+            noteElement.innerHTML =
+                '<i class="ti ti-info-circle"></i><p>Return to your dashboard and refresh later to check the persisted payment status.</p>';
+            dashboardButton.style.display = 'inline-flex';
+            homeButton.style.display = 'inline-flex';
+            return;
+        }
 
-        messageElement.textContent =
-            'Your payment has been successfully verified. Our team will reach out within 2 business days to confirm your seat and share your class schedule.';
+        if (result.transactionStatus === 'failed') {
+            titleElement.textContent = 'Payment Not Completed';
+            messageElement.textContent =
+                'Paystack reports that this transaction failed. Your payment has not been verified.';
+            iconElement.innerHTML =
+                '<i class="ti ti-alert-circle"></i>';
+            noteElement.innerHTML =
+                '<i class="ti ti-help-circle"></i><p>You can return to your dashboard to review the latest status and retry if the payment is marked as failed.</p>';
+            dashboardButton.style.display = 'inline-flex';
+            retryPaymentButton.style.display = 'inline-flex';
+            homeButton.style.display = 'inline-flex';
+            return;
+        }
 
-        iconElement.innerHTML =
-            '<i class="ti ti-circle-check"></i>';
-
-        noteElement.innerHTML =
-            '<i class="ti ti-info-circle"></i><p>Keep your payment reference for your records. Cybanext will provide the next registration or portal-access instructions through your registered email.</p>';
-
-        homeButton.style.display = 'inline-flex';
-
+        throw new Error(
+            result.error ||
+            'Your payment could not be verified.'
+        );
     } catch (error) {
         console.error('Payment verification error:', error);
 
         titleElement.textContent =
-            'Payment Not Confirmed';
+            'Payment Status Unavailable';
 
         messageElement.textContent =
             error.message ||
-            'Your payment could not be verified.';
+            'We could not confirm the payment status. Your registration has not been marked paid.';
 
         iconElement.innerHTML =
             '<i class="ti ti-alert-circle"></i>';
 
         noteElement.innerHTML =
-            '<i class="ti ti-help-circle"></i><p>No registration payment has been confirmed yet. Return to the payment page and try again if you cancelled or encountered an error.</p>';
-
-        retryPaymentButton.style.display = 'inline-flex';
+            '<i class="ti ti-help-circle"></i><p>Return to your dashboard to refresh the persisted status. Do not retry until you confirm the previous attempt did not complete.</p>';
+        dashboardButton.style.display = 'inline-flex';
+        homeButton.style.display = 'inline-flex';
     }
 })();
 </script>

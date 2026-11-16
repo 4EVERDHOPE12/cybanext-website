@@ -95,12 +95,7 @@ module.exports = async (req, res) => {
   try {
     const result = await verifyPaystackTransaction(reference);
 
-    if (
-      !result.status ||
-      !result.data ||
-      result.data.reference !== reference ||
-      !['success', 'failed'].includes(result.data.status)
-    ) {
+    if (!result.status || !result.data || result.data.reference !== reference) {
       return res.status(400).json({
         verified: false,
         error: 'The payment was not completed successfully.'
@@ -108,6 +103,22 @@ module.exports = async (req, res) => {
     }
 
     const transaction = result.data;
+    if (transaction.status === 'pending') {
+      return res.status(400).json({
+        verified: false,
+        transactionStatus: 'pending',
+        error: 'Paystack has not completed this payment yet.'
+      });
+    }
+
+    if (!['success', 'failed'].includes(transaction.status)) {
+      return res.status(400).json({
+        verified: false,
+        transactionStatus: 'unknown',
+        error: 'The payment status could not be verified.'
+      });
+    }
+
     const metadata = parseMetadata(transaction.metadata);
     const track = metadata && metadata.track;
     const pricingOption = metadata && metadata.pricing_option;
@@ -176,6 +187,7 @@ module.exports = async (req, res) => {
 
       return res.status(400).json({
         verified: false,
+        transactionStatus: 'failed',
         error: 'The payment was not completed successfully.'
       });
     }
