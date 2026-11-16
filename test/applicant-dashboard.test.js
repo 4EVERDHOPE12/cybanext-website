@@ -39,6 +39,8 @@ function createApplicant(overrides = {}) {
     expectedCurrency: 'GHS',
     pricingOption: 'GHS',
     paymentReference: null,
+    verifiedTransactionId: null,
+    paymentVerificationTimestamp: null,
     createdAt: '2026-10-20T12:00:00.000Z',
     ...overrides
   };
@@ -205,7 +207,9 @@ test('dashboard data uses persisted registration values and leaves historical am
     expectedAmount: 1200,
     expectedCurrency: 'GHS',
     pricingOption: 'GHS',
-    paymentReference: 'DF-HISTORICAL-123'
+    paymentReference: 'DF-HISTORICAL-123',
+    verifiedTransactionId: 'transaction-123',
+    paymentVerificationTimestamp: '2026-10-21T12:30:00.000Z'
   });
   const lookupIds = [];
   const applicant = await getApplicantDashboardData(
@@ -220,6 +224,11 @@ test('dashboard data uses persisted registration values and leaves historical am
   assert.equal(applicant.amountDue, 1200);
   assert.equal(applicant.currency, 'GHS');
   assert.equal(applicant.paymentReference, 'DF-HISTORICAL-123');
+  assert.equal(applicant.verifiedTransactionId, 'transaction-123');
+  assert.equal(
+    applicant.paymentVerificationTimestamp,
+    '2026-10-21T12:30:00.000Z'
+  );
   assert.equal(applicant.createdAt, historical.createdAt);
   assert.equal(applicant.canPay, false);
 });

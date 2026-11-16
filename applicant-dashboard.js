@@ -1,9 +1,10 @@
 (async function () {
-  const logoutButtons = [
-    document.getElementById('logoutButton'),
-    document.getElementById('sidebarLogoutButton')
-  ].filter(Boolean);
-
+  const menuToggle = document.getElementById('menuToggleButton');
+  const primaryNav = document.getElementById('primaryNavigation');
+  const navigationLinks = primaryNav
+    ? Array.from(primaryNav.querySelectorAll('[data-dashboard-link]'))
+    : [];
+  const logoutButton = document.getElementById('logoutButton');
   const supportLink = document.getElementById('supportLink');
   const payButton = document.getElementById('payNowButton');
 
@@ -13,12 +14,22 @@
   const trackValue = document.getElementById('trackValue');
   const applicationStatusValue = document.getElementById('applicationStatusValue');
   const paymentValue = document.getElementById('paymentValue');
+  const applicationTrackValue = document.getElementById('applicationTrackValue');
+  const applicationReferenceValue = document.getElementById('applicationReferenceValue');
+  const submissionDateValue = document.getElementById('submissionDateValue');
+  const applicantEmailValue = document.getElementById('applicantEmailValue');
+  const applicationStatusDetail = document.getElementById('applicationStatusDetail');
   const paymentAlertText = document.getElementById('paymentAlertText');
   const amountValue = document.getElementById('amountValue');
   const paymentStatusValue = document.getElementById('paymentStatusValue');
+  const paymentReferenceItem = document.getElementById('paymentReferenceItem');
   const referenceValue = document.getElementById('referenceValue');
+  const verifiedTransactionItem = document.getElementById('verifiedTransactionItem');
+  const verifiedTransactionValue = document.getElementById('verifiedTransactionValue');
+  const paymentVerifiedDateItem = document.getElementById('paymentVerifiedDateItem');
+  const paymentVerifiedDateValue = document.getElementById('paymentVerifiedDateValue');
   const progressList = document.getElementById('progressList');
-
+  const applicationCard = document.getElementById('applicationCard');
   const paymentCard = document.getElementById('paymentCard');
 
   function formatMoney(value, currency = 'GHS') {
@@ -33,6 +44,21 @@
       return '—';
     }
     return `GH₵${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+
+  function formatDate(value) {
+    if (!value) {
+      return '—';
+    }
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return '—';
+    }
+    return date.toLocaleDateString('en-GB', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric'
+    });
   }
 
   function normalizeStatus(status) {
@@ -62,6 +88,13 @@
       default:
         return 'Status unavailable';
     }
+  }
+
+  function applicationStatusLabel(status) {
+    if (status === 'payment_verified') {
+      return 'Confirmed';
+    }
+    return status === 'unknown' ? 'Status unavailable' : 'Received';
   }
 
   function statusTone(status) {
@@ -96,15 +129,54 @@
     return `mailto:support@cybanext.com?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
   }
 
+  function setMenuOpen(open, returnFocus = false) {
+    if (!menuToggle || !primaryNav) {
+      return;
+    }
+
+    const isOpen = Boolean(open);
+    primaryNav.dataset.open = String(isOpen);
+    const hideNavigation = window.innerWidth <= 820 && !isOpen;
+    primaryNav.inert = hideNavigation;
+    primaryNav.setAttribute('aria-hidden', String(hideNavigation));
+    menuToggle.setAttribute('aria-expanded', String(isOpen));
+    menuToggle.setAttribute(
+      'aria-label',
+      isOpen ? 'Close navigation menu' : 'Open navigation menu'
+    );
+
+    if (isOpen) {
+      primaryNav.querySelector('[data-dashboard-link]')?.focus({ preventScroll: true });
+    } else if (returnFocus) {
+      menuToggle.focus();
+    }
+  }
+
+  setMenuOpen(false);
+
+  function setCurrentNavigation(link) {
+    navigationLinks.forEach((item) => {
+      if (item === link) {
+        item.setAttribute('aria-current', 'page');
+      } else {
+        item.removeAttribute('aria-current');
+      }
+    });
+  }
+
+  function synchronizeCurrentNavigation() {
+    const currentLink = navigationLinks.find(
+      (link) => link.getAttribute('href') === window.location.hash
+    ) || navigationLinks.find((link) => link.getAttribute('href') === '#overview');
+
+    if (currentLink) {
+      setCurrentNavigation(currentLink);
+    }
+  }
+
   function renderProgress(data) {
     const status = normalizeStatus(data.status);
-    const submittedDate = data.createdAt
-      ? new Date(data.createdAt).toLocaleDateString('en-GB', {
-        day: '2-digit',
-        month: 'short',
-        year: 'numeric'
-      })
-      : null;
+    const submittedDate = formatDate(data.createdAt);
     const paymentStep = {
       payment_verified: {
         label: 'Payment verified',
@@ -135,7 +207,7 @@
     const steps = [
       {
         label: 'Application received',
-        note: submittedDate ? `Submitted on ${submittedDate}` : null,
+        note: submittedDate !== '—' ? `Submitted on ${submittedDate}` : null,
         state: 'completed'
       },
       paymentStep
@@ -172,12 +244,11 @@
     const track = data.track || '—';
     const status = normalizeStatus(data.status);
     const paymentStatus = paymentStatusLabel(status);
-    const applicationStatus = status === 'payment_verified'
-      ? 'Confirmed'
-      : status === 'unknown'
-        ? 'Status unavailable'
-        : 'Received';
-    const paymentReference = data.paymentReference || '—';
+    const applicationStatus = applicationStatusLabel(status);
+    const paymentReference = data.paymentReference || null;
+    const canPay = data.canPay === true &&
+      ['pending', 'payment_failed'].includes(status);
+    const verified = status === 'payment_verified';
 
     welcomeName.textContent = fullName;
     userNameLabel.textContent = fullName;
@@ -185,30 +256,61 @@
     trackValue.textContent = track;
     applicationStatusValue.textContent = applicationStatus;
     paymentValue.textContent = paymentStatus;
+    applicationTrackValue.textContent = track;
+    applicationReferenceValue.textContent = reference;
+    submissionDateValue.textContent = formatDate(data.createdAt);
+    applicantEmailValue.textContent = data.email || '—';
+    applicationStatusDetail.textContent = applicationStatus;
     amountValue.textContent = formatMoney(data.amountDue, data.currency);
     paymentStatusValue.textContent = paymentStatus;
-    referenceValue.textContent = paymentReference;
+    referenceValue.textContent = paymentReference || '—';
+    verifiedTransactionValue.textContent =
+      data.verifiedTransactionId === null || data.verifiedTransactionId === undefined
+        ? '—'
+        : String(data.verifiedTransactionId);
+    paymentVerifiedDateValue.textContent =
+      formatDate(data.paymentVerificationTimestamp);
 
-    paymentCard.classList.remove('status-success', 'status-warning', 'status-danger');
+    paymentReferenceItem.hidden = !paymentReference;
+    verifiedTransactionItem.hidden = !verified ||
+      data.verifiedTransactionId === null ||
+      data.verifiedTransactionId === undefined;
+    paymentVerifiedDateItem.hidden = !verified ||
+      !data.paymentVerificationTimestamp ||
+      paymentVerifiedDateValue.textContent === '—';
+
+    [applicationCard, paymentCard].forEach((card) => {
+      card.classList.remove('status-success', 'status-warning', 'status-danger');
+    });
     const tone = statusTone(status);
     if (tone !== 'neutral') {
       paymentCard.classList.add(`status-${tone}`);
+      if (status === 'payment_verified') {
+        applicationCard.classList.add(`status-${tone}`);
+      }
     }
 
     if (status === 'payment_verified') {
-      paymentAlertText.textContent = 'Paystack has verified your payment. Your registration is confirmed.';
+      paymentAlertText.textContent =
+        'Paystack has verified your payment. Your registration is confirmed.';
       payButton.hidden = true;
     } else if (status === 'payment_failed') {
-      paymentAlertText.textContent = 'Your last payment attempt failed. You may try again.';
-      payButton.hidden = !data.canPay;
+      paymentAlertText.textContent = canPay
+        ? 'Your last payment attempt failed. You may try again.'
+        : 'Your last payment attempt failed. Contact support before trying again.';
+      payButton.hidden = !canPay;
     } else if (status === 'payment_initiated') {
-      paymentAlertText.textContent = 'Payment was initiated. Verification is still pending; please refresh this page shortly.';
+      paymentAlertText.textContent =
+        'Payment was initiated. Verification is still pending; please refresh this page shortly.';
       payButton.hidden = true;
     } else if (status === 'pending') {
-      paymentAlertText.textContent = 'Your application has been received. Payment has not been started.';
-      payButton.hidden = !data.canPay;
+      paymentAlertText.textContent = canPay
+        ? 'Your application has been received. Payment has not been started.'
+        : 'Your application has been received. Payment is not available right now; contact support for help.';
+      payButton.hidden = !canPay;
     } else {
-      paymentAlertText.textContent = 'Your payment status is unavailable. Please contact support before attempting another payment.';
+      paymentAlertText.textContent =
+        'Your payment status is unavailable. Please contact support before attempting another payment.';
       payButton.hidden = true;
     }
 
@@ -255,6 +357,7 @@
   }
 
   async function handleLogout() {
+    setMenuOpen(false);
     try {
       const response = await fetch('/api/logout-applicant', {
         method: 'POST',
@@ -275,9 +378,50 @@
     }
   }
 
-  logoutButtons.forEach((button) => {
-    button.addEventListener('click', handleLogout);
+  menuToggle?.addEventListener('click', () => {
+    setMenuOpen(primaryNav.dataset.open !== 'true');
   });
+
+  document.addEventListener('click', (event) => {
+    if (
+      primaryNav?.dataset.open === 'true' &&
+      !primaryNav.contains(event.target) &&
+      !menuToggle?.contains(event.target)
+    ) {
+      setMenuOpen(false);
+    }
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && primaryNav?.dataset.open === 'true') {
+      event.preventDefault();
+      setMenuOpen(false, true);
+    }
+  });
+
+  navigationLinks.forEach((link) => {
+    link.addEventListener('click', () => {
+      setCurrentNavigation(link);
+      setMenuOpen(false);
+      const href = link.getAttribute('href');
+      const destination = href && href.startsWith('#')
+        ? document.getElementById(href.slice(1))
+        : null;
+      destination?.focus({ preventScroll: true });
+    });
+  });
+
+  synchronizeCurrentNavigation();
+
+  window.addEventListener('hashchange', synchronizeCurrentNavigation);
+
+  window.addEventListener('resize', () => {
+    if (window.innerWidth > 820) {
+      setMenuOpen(false);
+    }
+  });
+
+  logoutButton?.addEventListener('click', handleLogout);
 
   payButton?.addEventListener('click', async () => {
     const payload = await ensureAuthenticated();
@@ -307,8 +451,9 @@
       window.location.assign(result.authorizationUrl);
     } catch (error) {
       payButton.disabled = false;
-      payButton.innerHTML = '<span>Pay now</span><span class="pay-arrow" aria-hidden="true">→</span>';
-      paymentAlertText.textContent = error.message || 'We could not open payment checkout right now. Please try again.';
+      payButton.innerHTML = '<span>Continue to payment</span><span class="pay-arrow" aria-hidden="true">→</span>';
+      paymentAlertText.textContent = error.message ||
+        'We could not open payment checkout right now. Please try again.';
     }
   });
 
