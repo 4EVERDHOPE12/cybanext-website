@@ -108,45 +108,47 @@
             return;
         }
 
-        tryAgainBtn.disabled = true;
-        tryAgainBtn.textContent = 'Preparing secure checkout...';
-        retryMessage.textContent = '';
-        retryMessage.style.display = 'none';
+        try {
+            tryAgainBtn.disabled = true;
+            tryAgainBtn.textContent = 'Preparing secure checkout...';
+            retryMessage.textContent = '';
+            retryMessage.style.display = 'none';
 
-        const pricingOption =
-            sessionStorage.getItem('selectedPricingOption') || 'GHS';
-        const response = await fetch(
-            '../api/initialize-digital-forensics-payment',
-            {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    email: applicantEmail,
-                    registrationId,
-                    pricingOption
-                })
-            }
-        );
-        const result = await response.json();
-
-        if (!response.ok || !result.authorizationUrl) {
-            throw new Error(
-                result.error || 'We could not start the payment. Please try again.'
+            const pricingOption =
+                sessionStorage.getItem('selectedPricingOption') || 'GHS';
+            const response = await fetch(
+                '../api/initialize-digital-forensics-payment',
+                {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        email: applicantEmail,
+                        registrationId,
+                        pricingOption
+                    })
+                }
             );
-        }
+            const result = await response.json();
 
-        window.location.href = result.authorizationUrl;
-    } catch (error) {
-        console.error('Payment retry initialization error:', error);
-        retryMessage.textContent =
-            error.message || 'We could not start the payment. Please try again.';
-        retryMessage.className = 'dfir-payment-message error';
-        retryMessage.style.display = 'block';
-        tryAgainBtn.disabled = false;
-        tryAgainBtn.innerHTML =
-            'Try Payment Again <i class="ti ti-refresh"></i>';
+            if (!response.ok || !result.authorizationUrl) {
+                throw new Error(
+                    result.error || 'We could not start the payment. Please try again.'
+                );
+            }
+
+            window.location.href = result.authorizationUrl;
+        } catch (error) {
+            console.error('Payment retry initialization error:', error);
+            retryMessage.textContent =
+                error.message || 'We could not start the payment. Please try again.';
+            retryMessage.className = 'dfir-payment-message error';
+            retryMessage.style.display = 'block';
+            tryAgainBtn.disabled = false;
+            tryAgainBtn.innerHTML =
+                'Try Payment Again <i class="ti ti-refresh"></i>';
+        }
     });
 </script>
 

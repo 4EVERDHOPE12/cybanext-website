@@ -87,8 +87,14 @@ a {
   width: 100%;
 }
 
-.main-nav a.active {
+.main-nav a[aria-current="page"] {
   color: #111111;
+}
+
+.main-nav a:focus-visible {
+  outline: 2px solid #595959;
+  outline-offset: 3px;
+  border-radius: 3px;
 }
 
 /* These little "01 / 02 / 03" numbers only show up inside the
@@ -1432,30 +1438,9 @@ a {
     box-shadow: -8px 0 24px rgba(17, 17, 17, 0.1);
   }
 
-  /* A small red accent bar that grows in above the first link once
-     the drawer's open, just a bit of flourish so it doesn't feel
-     like a bare list of links. */
-  .main-nav::before {
-    content: '';
-    width: 2px;
-    height: 52px;
-    margin-bottom: 18px;
-    background: #D20334;
-    transform: scaleY(0);
-    transform-origin: top;
-    opacity: 0;
-    transition: transform 0.2s ease 0.48s, opacity 0.2s ease 0.48s;
-  }
-
   .main-nav.open {
     transform: translateX(0);
     transition-delay: 0s;
-  }
-
-  .main-nav.open::before {
-    transform: scaleY(1);
-    opacity: 1;
-    transition-delay: 0.28s;
   }
 
   .main-nav a {
@@ -1463,7 +1448,7 @@ a {
     align-items: baseline;
     gap: 14px;
     width: 100%;
-    padding: 12px 0;
+    padding: 12px 0 12px 14px;
     border-bottom: 0;
     font-size: clamp(18px, 5vw, 24px);
     font-weight: 600;
@@ -1471,6 +1456,23 @@ a {
     opacity: 0;
     transform: translateX(14px);
     transition: opacity 0.2s ease, transform 0.25s ease;
+  }
+
+  .main-nav a[aria-current="page"] {
+    position: relative;
+    color: #D20334;
+  }
+
+  .main-nav a[aria-current="page"]::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 0;
+    width: 3px;
+    height: 24px;
+    border-radius: 2px;
+    background: #D20334;
+    transform: translateY(-50%);
   }
 
   /* Each link gets its own transition-delay so they fade/slide in
@@ -1591,7 +1593,6 @@ a {
    snaps things open/closed instantly instead. */
 @media (prefers-reduced-motion: reduce) {
   .main-nav,
-  .main-nav::before,
   .main-nav a,
   .hamburger-btn span {
     transition-duration: 0.01ms;

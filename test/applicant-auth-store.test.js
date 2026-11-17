@@ -11,7 +11,10 @@ test('magic-link redemption and session creation use one conditional SQL stateme
   database.query = async (strings, ...parameters) => {
     sqlText = strings.join('?');
     values = parameters;
-    return [{ registrationId: 'DF-test-registration' }];
+    return [{
+      registrationId: 'DF-test-registration',
+      applicantType: 'digital_forensics'
+    }];
   };
   t.after(() => {
     database.query = originalQuery;
@@ -24,11 +27,15 @@ test('magic-link redemption and session creation use one conditional SQL stateme
   });
 
   assert.equal(result.registrationId, 'DF-test-registration');
-  assert.match(sqlText, /WITH redeemed AS/);
+  assert.match(sqlText, /WITH token_context AS MATERIALIZED/);
+  assert.match(sqlText, /redeemed AS/);
+  assert.match(sqlText, /candidate_count AS/);
+  assert.match(sqlText, /verification_regular_track_registration_id/);
   assert.match(sqlText, /UPDATE applicant_magic_link_tokens/);
   assert.match(sqlText, /used_at IS NULL/);
   assert.match(sqlText, /expires_at > CURRENT_TIMESTAMP/);
   assert.match(sqlText, /INSERT INTO applicant_sessions/);
+  assert.match(sqlText, /selectionRequired/);
   assert.match(sqlText, /FROM redeemed/);
   assert.equal(values[0], 'a'.repeat(64));
   assert.equal(values[1], 'b'.repeat(64));
@@ -42,7 +49,10 @@ test('applicant lookup uses the normalized existing registration model', async (
   database.query = async (strings, ...parameters) => {
     sqlText = strings.join('?');
     values = parameters;
-    return [{ registrationId: 'DF-test-registration' }];
+    return [{
+      registrationId: 'DF-test-registration',
+      applicantType: 'digital_forensics'
+    }];
   };
   t.after(() => {
     database.query = originalQuery;
@@ -51,9 +61,52 @@ test('applicant lookup uses the normalized existing registration model', async (
   const result = await authStore.findEligibleApplicant('applicant@example.com');
 
   assert.equal(result.registrationId, 'DF-test-registration');
+  assert.equal(result.applicantType, 'digital_forensics');
+  assert.match(sqlText, /UNION ALL/);
   assert.match(sqlText, /FROM digital_forensics_registrations/);
+  assert.match(sqlText, /FROM regular_track_applicants/);
   assert.match(sqlText, /WHERE email = \?/);
-  assert.deepEqual(values, ['applicant@example.com']);
+  assert.match(sqlText, /ORDER BY created_at DESC/);
+  assert.deepEqual(values, [
+    'applicant@example.com',
+    'applicant@example.com'
+  ]);
+});
+
+test('magic-link tokens are bound to exactly one typed registration', async (t) => {
+  const originalQuery = database.query;
+  const statements = [];
+  database.query = async (strings, ...parameters) => {
+    statements.push({ sql: strings.join('?'), parameters });
+    return [];
+  };
+  t.after(() => {
+    database.query = originalQuery;
+  });
+
+  await authStore.createMagicLinkToken({
+    applicantType: 'regular_track',
+    registrationId: 'RT-test-registration',
+    tokenHash: 'a'.repeat(64),
+    expiresAt: new Date('2026-10-20T12:15:00.000Z')
+  });
+
+  assert.match(statements[0].sql, /regular_track_registration_id/);
+  assert.match(statements[0].sql, /VALUES \(NULL, \?, \?, \?\)/);
+  assert.deepEqual(statements[0].parameters.slice(0, 3), [
+    'RT-test-registration',
+    'a'.repeat(64),
+    new Date('2026-10-20T12:15:00.000Z')
+  ]);
+  await assert.rejects(
+    authStore.createMagicLinkToken({
+      applicantType: 'unknown',
+      registrationId: 'unknown',
+      tokenHash: 'b'.repeat(64),
+      expiresAt: new Date()
+    }),
+    /Unsupported applicant registration type/
+  );
 });
 
 test('session revocation is conditional, persistent, and keyed by the session hash', async (t) => {

@@ -121,6 +121,40 @@ body {
   text-underline-offset: 3px;
 }
 
+.registration-options {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.registration-options li {
+  margin: 0;
+}
+
+.auth-card .registration-option {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid #d5d1c8;
+  background: #ffffff;
+  color: #111111;
+  text-align: left;
+}
+
+.auth-card .registration-option span {
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.auth-card .registration-option:hover,
+.auth-card .registration-option:focus-visible {
+  border-color: #d20334;
+  outline: 3px solid rgb(210 3 52 / 18%);
+}
+
 @media (max-width: 420px) {
   .auth-shell {
     width: min(100% - 24px, 480px);

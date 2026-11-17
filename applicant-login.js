@@ -33,7 +33,11 @@
         return;
       }
 
-      window.location.assign('/applicant-dashboard.html');
+      window.location.assign(
+        result.selectionRequired
+          ? '/applicant-registration-selection.html'
+          : '/applicant-dashboard.html'
+      );
     } catch {
       form.hidden = false;
       showMessage('We could not verify that link. Please try again.', true);

@@ -102,9 +102,9 @@ try {
   node -e "require.resolve('pg')"
   if ($LASTEXITCODE -ne 0) { throw 'The integration test process cannot resolve pg from npm exec.' }
   if ([string]::IsNullOrWhiteSpace($TestNamePattern)) {
-    node --test test/migration-runner.postgres.integration.test.js
+    node --test --test-concurrency=1 test/migration-runner.postgres.integration.test.js
   } else {
-    node --test --test-name-pattern $TestNamePattern test/migration-runner.postgres.integration.test.js
+    node --test --test-concurrency=1 --test-name-pattern $TestNamePattern test/migration-runner.postgres.integration.test.js
   }
   $testExitCode = $LASTEXITCODE
   if ($testExitCode -ne 0) { throw "PostgreSQL integration tests failed with exit code $testExitCode." }
@@ -152,7 +152,7 @@ try {
     $verifiedId = $inspection.Id -eq $containerId
     $verifiedLabel = $inspection.Config.Labels.$labelKey -eq $labelValue
     if ($inspection -and $verifiedId -and $verifiedLabel) {
-      docker rm --force $containerId
+      docker rm --force --volumes $containerId
       if ($LASTEXITCODE -ne 0) { Write-Warning "Cleanup failed for disposable container $containerId. Remove it with: docker rm --force $containerId" }
       else { Write-Host 'Disposable PostgreSQL container removed.' }
     } else {

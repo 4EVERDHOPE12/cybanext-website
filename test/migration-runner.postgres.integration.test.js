@@ -1,7 +1,7 @@
 ﻿const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
 const crypto = require('node:crypto');
-const test = require('node:test');
+const { describe, test } = require('node:test');
 const {
   EXPECTED_TABLES, MIGRATION_FILES, inspectExistingSchema, loadMigrations,
   runTestMigrations, sanitizeError
@@ -173,17 +173,18 @@ const enabled = process.env.CYBANEXT_RUN_POSTGRES_INTEGRATION === '1';
 if (!enabled) {
   test('PostgreSQL migration integration tests (run via scripts/run-postgres-integration.ps1)', { skip: 'Disposable PostgreSQL harness not enabled.' }, () => {});
 } else {
-  assert.ok(connectionString, 'Harness must provide CYBANEXT_TEST_DATABASE_URL.');
-  validateLoopbackConnectionUrl(connectionString);
-  const { Client } = require('pg');
-  const harnessToken = process.env.CYBANEXT_TEST_HARNESS_TOKEN;
-  const harnessId = process.env.CYBANEXT_TEST_HARNESS_ID;
-  const containerId = process.env.CYBANEXT_TEST_CONTAINER_ID;
-  const postgresMajorVersion = process.env.CYBANEXT_TEST_POSTGRES_MAJOR_VERSION || '16';
-  assert.match(postgresMajorVersion, /^(?:16|18)$/, 'Supported PostgreSQL major version is required.');
-  assert.ok(/^[A-Za-z0-9]{32,}$/.test(harnessToken || ''), 'Disposable harness authorization is required.');
-  assert.ok(/^[a-f0-9]{32}$/i.test(harnessId || ''), 'Disposable harness identity is required.');
-  assert.ok(/^[a-f0-9]{64}$/i.test(containerId || ''), 'Disposable container identity is required.');
+  describe('Disposable PostgreSQL migration integration suite', { concurrency: 1 }, () => {
+    assert.ok(connectionString, 'Harness must provide CYBANEXT_TEST_DATABASE_URL.');
+    validateLoopbackConnectionUrl(connectionString);
+    const { Client } = require('pg');
+    const harnessToken = process.env.CYBANEXT_TEST_HARNESS_TOKEN;
+    const harnessId = process.env.CYBANEXT_TEST_HARNESS_ID;
+    const containerId = process.env.CYBANEXT_TEST_CONTAINER_ID;
+    const postgresMajorVersion = process.env.CYBANEXT_TEST_POSTGRES_MAJOR_VERSION || '16';
+    assert.match(postgresMajorVersion, /^(?:16|18)$/, 'Supported PostgreSQL major version is required.');
+    assert.ok(/^[A-Za-z0-9]{32,}$/.test(harnessToken || ''), 'Disposable harness authorization is required.');
+    assert.ok(/^[a-f0-9]{32}$/i.test(harnessId || ''), 'Disposable harness identity is required.');
+    assert.ok(/^[a-f0-9]{64}$/i.test(containerId || ''), 'Disposable container identity is required.');
   const clientFactory = (transformStatement = (statement) => statement) => {
     const client = new Client({ connectionString, connectionTimeoutMillis: 5000 });
     let connected = false;
@@ -323,7 +324,8 @@ if (!enabled) {
     );
     return { digitalPayment, regularPayment };
   };
-  const pre006Migrations = loadMigrations().slice(0, -1);
+  // Migration 006 rollback tests must start from migrations 001 through 005.
+  const pre006Migrations = loadMigrations().slice(0, 5);
   const installPre006Schema = async () => {
     const client = new Client({ connectionString, connectionTimeoutMillis: 5000 });
     await client.connect();
@@ -354,7 +356,10 @@ if (!enabled) {
   const assertPre006SchemaIntact = async () => {
     const schemaClient = clientFactory();
     try {
-      await inspectExistingSchema(schemaClient, { includeSmsOutbox: false });
+      await inspectExistingSchema(schemaClient, {
+        includeSmsOutbox: false,
+        includeApplicantRegistrationSelection: false
+      });
     } finally {
       await schemaClient.close();
     }
@@ -425,7 +430,7 @@ if (!enabled) {
     return (statement) => statement.replace(originalLiteral, replacementLiteral);
   };
 
-  test('fresh migrations 001 through 006 create expected tables and checksummed history', async () => {
+  test('fresh migrations 001 through 010 create expected tables and checksummed history', async () => {
     await reset(); await migrate();
     const tables = await query("SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename");
     for (const name of [...EXPECTED_TABLES, 'schema_migrations']) assert.ok(tables.some((row) => row.tablename === name), `Missing ${name}`);
@@ -434,6 +439,166 @@ if (!enabled) {
     assert.deepEqual(history.map((row) => row.checksum), loadMigrations().map((row) => row.checksum));
     const version = await query('SELECT version() AS version');
     assert.match(version[0].version, new RegExp(`PostgreSQL ${postgresMajorVersion.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.`));
+  });
+
+  test('magic-link sessions select only registrations belonging to the verified email', async () => {
+    await reset();
+    await migrate();
+
+    const database = require('../lib/digital-forensics-database');
+    const authStore = require('../lib/applicant-auth-store');
+    const client = new Client({ connectionString });
+    await client.connect();
+    const restoreDatabase = bindDatabaseClient(database, client);
+
+    try {
+      const suffix = crypto.randomBytes(8).toString('hex');
+      const sharedEmail = `portal-selection-${suffix}@example.test`;
+      const otherEmail = `portal-other-${suffix}@example.test`;
+      const registrations = [
+        ['DF-portal-' + suffix, 'digital_forensics', 'digital_forensics'],
+        ['RT-portal-' + suffix + '-1', 'regular_track', 'incident_response'],
+        ['RT-portal-' + suffix + '-2', 'regular_track', 'soc_analyst']
+      ];
+
+      for (const [registrationId, , track] of registrations.slice(1)) {
+        await query(`
+          INSERT INTO public.regular_track_applicants
+            (registration_id, full_name, email, track, status)
+          VALUES ($1, 'Portal Applicant', $2, $3, 'pending')
+        `, [registrationId, sharedEmail, track]);
+      }
+      await query(`
+        INSERT INTO public.digital_forensics_registrations
+          (registration_id, full_name, email, status, expected_amount, expected_currency)
+        VALUES ($1, 'Portal Applicant', $2, 'pending', 1500, 'GHS')
+      `, [registrations[0][0], sharedEmail]);
+      const legacySessionHash = crypto.randomBytes(32).toString('hex');
+      await query(`
+        INSERT INTO public.applicant_sessions
+          (registration_id, session_token_hash, expires_at)
+        VALUES ($1, $2, CURRENT_TIMESTAMP + INTERVAL '30 days')
+      `, [registrations[0][0], legacySessionHash]);
+      const legacySession = await authStore.findApplicantSession(legacySessionHash);
+      assert.equal(legacySession.applicantType, 'digital_forensics');
+      assert.equal(legacySession.registrationId, registrations[0][0]);
+      assert.equal(legacySession.selectionRequired, false);
+      await query(`
+        INSERT INTO public.regular_track_applicants
+          (registration_id, full_name, email, track, status)
+        VALUES ($1, 'Other Applicant', $2, 'cloud_security', 'pending')
+      `, [`RT-other-${suffix}`, otherEmail]);
+
+      const anchor = await authStore.findEligibleApplicant(sharedEmail);
+      assert.equal(anchor.applicantType, 'digital_forensics');
+      const tokenHash = crypto.randomBytes(32).toString('hex');
+      const sessionTokenHash = crypto.randomBytes(32).toString('hex');
+      await authStore.createMagicLinkToken({
+        ...anchor,
+        tokenHash,
+        expiresAt: new Date(Date.now() + 60_000)
+      });
+
+      const redeemed = await authStore.redeemMagicLinkToken({
+        tokenHash,
+        sessionTokenHash,
+        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+      });
+      assert.equal(redeemed.selectionRequired, true);
+
+      const options = await authStore.listApplicantRegistrationsForSession(
+        sessionTokenHash
+      );
+      assert.equal(options.length, 3);
+      assert.equal(options.some((item) => Object.hasOwn(item, 'phone')), false);
+      assert.equal(await authStore.selectApplicantRegistration({
+        applicantType: 'regular_track',
+        registrationId: `RT-other-${suffix}`,
+        sessionTokenHash
+      }), null);
+
+      const selectedId = registrations[2][0];
+      assert.deepEqual(await authStore.selectApplicantRegistration({
+        applicantType: 'regular_track',
+        registrationId: selectedId,
+        sessionTokenHash
+      }), { registrationId: selectedId });
+      assert.equal(await authStore.selectApplicantRegistration({
+        applicantType: 'digital_forensics',
+        registrationId: registrations[0][0],
+        sessionTokenHash
+      }), null);
+      const selectedSession =
+        await authStore.findApplicantSession(sessionTokenHash);
+      assert.equal(selectedSession.registrationId, selectedId);
+      assert.equal(selectedSession.applicantType, 'regular_track');
+      assert.equal(selectedSession.selectionRequired, false);
+
+      const regularOnlyEmail = `portal-regular-${suffix}@example.test`;
+      await query(`
+        INSERT INTO public.regular_track_applicants
+          (registration_id, full_name, email, track, status)
+        VALUES ($1, 'Single Applicant', $2, 'network_security', 'pending')
+      `, [`RT-single-${suffix}`, regularOnlyEmail]);
+      const regularAnchor = await authStore.findEligibleApplicant(regularOnlyEmail);
+      const regularTokenHash = crypto.randomBytes(32).toString('hex');
+      const regularSessionHash = crypto.randomBytes(32).toString('hex');
+      await authStore.createMagicLinkToken({
+        ...regularAnchor,
+        tokenHash: regularTokenHash,
+        expiresAt: new Date(Date.now() + 60_000)
+      });
+      const single = await authStore.redeemMagicLinkToken({
+        tokenHash: regularTokenHash,
+        sessionTokenHash: regularSessionHash,
+        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+      });
+      assert.equal(single.selectionRequired, false);
+      assert.equal(single.applicantType, 'regular_track');
+      assert.equal(single.registrationId, `RT-single-${suffix}`);
+
+      const digitalEmail = `portal-digital-${suffix}@example.test`;
+      const digitalRegistrationIds = [
+        `DF-single-${suffix}-1`,
+        `DF-single-${suffix}-2`
+      ];
+      for (const registrationId of digitalRegistrationIds) {
+        await query(`
+          INSERT INTO public.digital_forensics_registrations
+            (registration_id, full_name, email, status, expected_amount, expected_currency)
+          VALUES ($1, 'Digital Applicant', $2, 'pending', 1500, 'GHS')
+        `, [registrationId, digitalEmail]);
+      }
+      const digitalAnchor = await authStore.findEligibleApplicant(digitalEmail);
+      const digitalTokenHash = crypto.randomBytes(32).toString('hex');
+      const digitalSessionHash = crypto.randomBytes(32).toString('hex');
+      await authStore.createMagicLinkToken({
+        ...digitalAnchor,
+        tokenHash: digitalTokenHash,
+        expiresAt: new Date(Date.now() + 60_000)
+      });
+      const digitalSession = await authStore.redeemMagicLinkToken({
+        tokenHash: digitalTokenHash,
+        sessionTokenHash: digitalSessionHash,
+        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+      });
+      assert.equal(digitalSession.selectionRequired, true);
+      assert.equal((await authStore.listApplicantRegistrationsForSession(
+        digitalSessionHash
+      )).length, 2);
+      assert.deepEqual(await authStore.selectApplicantRegistration({
+        applicantType: 'digital_forensics',
+        registrationId: digitalRegistrationIds[1],
+        sessionTokenHash: digitalSessionHash
+      }), { registrationId: digitalRegistrationIds[1] });
+      const selectedDigitalSession =
+        await authStore.findApplicantSession(digitalSessionHash);
+      assert.equal(selectedDigitalSession.applicantType, 'digital_forensics');
+      assert.equal(selectedDigitalSession.registrationId, digitalRegistrationIds[1]);
+    } finally {
+      restoreDatabase();
+      await client.end();
+    }
   });
 
   test('ignores PostgreSQL 18 implicit NOT NULL constraints but rejects unexpected checks', async () => {
@@ -504,7 +669,173 @@ if (!enabled) {
       assert.equal(events.rows[0].source, 'main_application');
       assert.ok(events.rows[0].occurred_at instanceof Date);
       assert.equal(events.rows[0].digital_forensics_registration_id, null);
+      const currentConsent = await client.query(`
+        SELECT phone_snapshot
+        FROM public.sms_current_consent
+        WHERE regular_track_registration_id = $1
+      `, [applicant.id]);
+      assert.deepEqual(currentConsent.rows, [{ phone_snapshot: '+233241234567' }]);
       await client.query('ROLLBACK');
+
+      await client.query('BEGIN');
+      const digitalStore = require('../lib/digital-forensics-store');
+      const digital = await digitalStore.createRegistration({
+        fullName: 'SMS Digital Consent Integration',
+        email: 'sms-digital-consent@example.test',
+        phone: '0241234567',
+        smsConsent: true
+      });
+      const digitalEvidence = await client.query(`
+        SELECT event_type, phone_snapshot, source
+        FROM public.sms_consent_events
+        WHERE digital_forensics_registration_id = $1
+      `, [digital.id]);
+      assert.deepEqual(digitalEvidence.rows, [{
+        event_type: 'grant',
+        phone_snapshot: '+233241234567',
+        source: 'digital_forensics_standalone'
+      }]);
+      const digitalCurrentConsent = await client.query(`
+        SELECT phone_snapshot
+        FROM public.sms_current_consent
+        WHERE digital_forensics_registration_id = $1
+      `, [digital.id]);
+      assert.deepEqual(digitalCurrentConsent.rows, [{ phone_snapshot: '+233241234567' }]);
+      await client.query('ROLLBACK');
+
+      const appRoleRegistration = await regularStore.createApplicant({
+        fullName: 'SMS Application Role Integration',
+        email: 'sms-app-role@example.test',
+        phone: '0241234567',
+        track: 'incident_response',
+        smsConsent: false
+      });
+      await client.query('SET ROLE cybanext_sms_consent_application');
+      try {
+        await assert.rejects(
+          client.query('SELECT * FROM public.sms_consent_events'),
+          { code: '42501' }
+        );
+        await assert.rejects(
+          client.query('UPDATE public.sms_consent_events SET occurred_at = clock_timestamp()'),
+          { code: '42501' }
+        );
+        await assert.rejects(
+          client.query('DELETE FROM public.sms_consent_events'),
+          { code: '42501' }
+        );
+        await assert.rejects(
+          client.query(`
+            INSERT INTO public.sms_consent_events
+              (regular_track_registration_id, event_type, phone_snapshot, purpose,
+               policy_version, source)
+            VALUES ($1, 'grant', '+233241234567',
+              'SMS notifications confirming successful payment for a Cybanext programme.',
+              'sms-payment-success-v1', 'main_application')
+          `, [appRoleRegistration.id]),
+          { code: '42501' }
+        );
+        await assert.rejects(
+          client.query(`
+            INSERT INTO public.sms_current_consent
+              (regular_track_registration_id, phone_snapshot)
+            VALUES ($1, '+233241234567')
+          `, [appRoleRegistration.id]),
+          { code: '42501' }
+        );
+        await assert.rejects(
+          client.query(`
+            UPDATE public.sms_current_consent
+            SET phone_snapshot = '+233241234567'
+            WHERE regular_track_registration_id = $1
+          `, [appRoleRegistration.id]),
+          { code: '42501' }
+        );
+        await assert.rejects(
+          client.query(`
+            DELETE FROM public.sms_current_consent
+            WHERE regular_track_registration_id = $1
+          `, [appRoleRegistration.id]),
+          { code: '42501' }
+        );
+        await assert.rejects(
+          client.query('SELECT public.purge_expired_sms_consent_events()'),
+          { code: '42501' }
+        );
+        await assert.rejects(
+          client.query('TRUNCATE public.sms_consent_events'),
+          { code: '42501' }
+        );
+        await assert.rejects(
+          client.query('TRUNCATE public.sms_current_consent'),
+          { code: '42501' }
+        );
+        const recorded = await client.query(`
+          SELECT public.record_sms_consent(
+            $1, NULL::TEXT, '+233241234567',
+            'sms-payment-success-v1', 'main_application'
+          ) AS recorded
+        `, [appRoleRegistration.id]);
+        assert.deepEqual(recorded.rows, [{ recorded: true }]);
+        const currentState = await client.query(`
+          SELECT phone_snapshot
+          FROM public.sms_current_consent
+          WHERE regular_track_registration_id = $1
+        `, [appRoleRegistration.id]);
+        assert.deepEqual(currentState.rows, [{ phone_snapshot: '+233241234567' }]);
+      } finally {
+        await client.query('RESET ROLE');
+      }
+
+      const rejectingTriggerName = `reject_sms_consent_${crypto.randomUUID().replace(/-/g, '')}`;
+      const rejectingFunctionName = `${rejectingTriggerName}_function`;
+      await client.query(`
+        CREATE FUNCTION public.${rejectingFunctionName}()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        BEGIN
+          RAISE EXCEPTION 'test consent evidence failure';
+        END;
+        $$
+      `);
+      await client.query(`
+        CREATE TRIGGER ${rejectingTriggerName}
+        BEFORE INSERT ON public.sms_consent_events
+        FOR EACH ROW EXECUTE FUNCTION public.${rejectingFunctionName}()
+      `);
+      try {
+        await assert.rejects(regularStore.createApplicant({
+          fullName: 'Atomic Regular Consent',
+          email: 'atomic-regular-consent@example.test',
+          phone: '0241234567',
+          track: 'incident_response',
+          smsConsent: true
+        }), /test consent evidence failure/);
+        const regularRows = await client.query(`
+          SELECT count(*)::int AS count
+          FROM public.regular_track_applicants
+          WHERE email = 'atomic-regular-consent@example.test'
+        `);
+        assert.equal(regularRows.rows[0].count, 0);
+
+        const digitalStore = require('../lib/digital-forensics-store');
+        await assert.rejects(digitalStore.createRegistration({
+          fullName: 'Atomic Digital Consent',
+          email: 'atomic-digital-consent@example.test',
+          phone: '0241234567',
+          smsConsent: true
+        }), /test consent evidence failure/);
+        const digitalRows = await client.query(`
+          SELECT count(*)::int AS count
+          FROM public.digital_forensics_registrations
+          WHERE email = 'atomic-digital-consent@example.test'
+        `);
+        assert.equal(digitalRows.rows[0].count, 0);
+      } finally {
+        await client.query(`DROP TRIGGER ${rejectingTriggerName} ON public.sms_consent_events`);
+        await client.query(`DROP FUNCTION public.${rejectingFunctionName}()`);
+      }
 
       await client.query('BEGIN');
       await client.query(`
@@ -561,6 +892,126 @@ if (!enabled) {
     }
   });
 
+  test('SMS consent retention removes only expired history and preserves current eligibility', async () => {
+    await reset();
+    await migrate();
+    const suffix = crypto.randomUUID().replace(/-/g, '');
+    const database = require('../lib/digital-forensics-database');
+    const digitalStore = require('../lib/digital-forensics-store');
+    const regularStore = require('../lib/regular-track-payment-store');
+    const client = new Client({ connectionString });
+    await client.connect();
+    const restoreDatabase = bindDatabaseClient(database, client);
+    const testRole = `sms_consent_app_${suffix}`;
+    let roleCreated = false;
+
+    try {
+      const fixtures = await createSmsPaymentFixtures(
+        digitalStore, regularStore, suffix
+      );
+      const recent = await regularStore.createApplicant({
+        fullName: `SMS Recent ${suffix}`,
+        email: `sms-recent-${suffix}@example.test`,
+        phone: '0241234567',
+        track: 'incident_response',
+        smsConsent: true
+      });
+
+      await client.query('ALTER TABLE public.sms_consent_events DISABLE TRIGGER sms_consent_events_append_only');
+      await client.query(`
+        UPDATE public.sms_consent_events
+        SET occurred_at = clock_timestamp() - INTERVAL '91 days'
+        WHERE digital_forensics_registration_id = $1
+           OR regular_track_registration_id = $2
+      `, [fixtures.digital.id, fixtures.regular.id]);
+      await client.query('ALTER TABLE public.sms_consent_events ENABLE TRIGGER sms_consent_events_append_only');
+
+      await client.query(`CREATE ROLE ${testRole} NOLOGIN`);
+      roleCreated = true;
+      await client.query(`
+        GRANT SELECT, UPDATE, DELETE ON public.sms_consent_events, public.sms_current_consent
+        TO ${testRole}
+      `);
+      await client.query(`GRANT USAGE ON SCHEMA public TO ${testRole}`);
+      await client.query(`SET ROLE ${testRole}`);
+      await assert.rejects(
+        client.query('UPDATE public.sms_consent_events SET occurred_at = clock_timestamp()'),
+        { code: '55000' }
+      );
+      await assert.rejects(
+        client.query('DELETE FROM public.sms_consent_events'),
+        { code: '55000' }
+      );
+      await assert.rejects(
+        client.query('UPDATE public.sms_current_consent SET phone_snapshot = phone_snapshot'),
+        { code: '55000' }
+      );
+      await assert.rejects(
+        client.query('DELETE FROM public.sms_current_consent'),
+        { code: '55000' }
+      );
+      await assert.rejects(
+        client.query('SELECT public.purge_expired_sms_consent_events()'),
+        { code: '42501' }
+      );
+      await client.query('RESET ROLE');
+
+      const purge = async () => {
+        await client.query('SET ROLE cybanext_sms_consent_retention_operator');
+        try {
+          const result = await client.query(
+            'SELECT public.purge_expired_sms_consent_events() AS deleted_count'
+          );
+          return result.rows[0].deleted_count;
+        } finally {
+          await client.query('RESET ROLE');
+        }
+      };
+      const removed = await purge();
+      assert.equal(removed, 2);
+      assert.equal(await purge(), 0);
+
+      const remainingEvents = await client.query(`
+        SELECT count(*)::int AS count
+        FROM public.sms_consent_events
+        WHERE digital_forensics_registration_id = $1
+           OR regular_track_registration_id = $2
+           OR regular_track_registration_id = $3
+      `, [fixtures.digital.id, fixtures.regular.id, recent.id]);
+      assert.equal(remainingEvents.rows[0].count, 1);
+      const currentStates = await client.query(`
+        SELECT count(*)::int AS count
+        FROM public.sms_current_consent
+        WHERE digital_forensics_registration_id = $1
+           OR regular_track_registration_id = ANY($2::text[])
+      `, [fixtures.digital.id, [fixtures.regular.id, recent.id]]);
+      assert.equal(currentStates.rows[0].count, 3);
+
+      const payments = await verifySmsPaymentFixtures(
+        digitalStore, regularStore, fixtures
+      );
+      assert.equal(payments.digitalPayment.status, 'payment_verified');
+      assert.equal(payments.regularPayment.reference, fixtures.regularReference);
+      const queued = await client.query(
+        'SELECT count(*)::int AS count FROM public.sms_notification_outbox WHERE event_key LIKE $1',
+        [`%${suffix}`]
+      );
+      assert.equal(queued.rows[0].count, 2);
+    } finally {
+      try { await client.query('RESET ROLE'); } catch {}
+      try {
+        if (roleCreated) {
+          await client.query(`REVOKE ALL ON public.sms_consent_events, public.sms_current_consent FROM ${testRole}`);
+          await client.query(`REVOKE ALL ON SCHEMA public FROM ${testRole}`);
+          await client.query(`DROP ROLE ${testRole}`);
+        }
+      } finally {
+        restoreDatabase();
+        await client.end();
+      }
+    }
+  });
+
   test('notification outbox links registrations, deduplicates events, and serializes claims', async (t) => {
     await reset();
     await migrate();
@@ -587,7 +1038,7 @@ if (!enabled) {
       WITH inserted AS (
         INSERT INTO public.digital_forensics_registrations
           (registration_id, full_name, email, status, expected_amount, expected_currency)
-        VALUES ($1, 'Outbox Integration', 'outbox-digital@example.com', 'pending', 1200, 'GHS')
+        VALUES ($1, 'Outbox Integration', 'outbox-digital@example.com', 'pending', 1500, 'GHS')
         RETURNING registration_id, full_name, email
       )
       INSERT INTO public.email_notification_outbox
@@ -704,7 +1155,7 @@ if (!enabled) {
       await client.query(`
         INSERT INTO public.digital_forensics_registrations
           (registration_id, full_name, email, status, expected_amount, expected_currency)
-        VALUES ($1, 'SMS Integration', $2, 'pending', 1200, 'GHS')
+        VALUES ($1, 'SMS Integration', $2, 'pending', 1500, 'GHS')
       `, [digitalId, `sms-digital-${suffix}@example.test`]);
       await client.query(`
         INSERT INTO public.regular_track_applicants
@@ -1070,7 +1521,7 @@ if (!enabled) {
     }
   });
 
-  test('SMS payment queueing suppresses missing and withdrawn consent without blocking payment', async () => {
+  test('SMS payment queueing suppresses missing current consent without blocking payment', async () => {
     await reset();
     await migrate();
     const suffix = crypto.randomUUID().replace(/-/g, '');
@@ -1086,19 +1537,8 @@ if (!enabled) {
         digitalStore,
         regularStore,
         suffix,
-        { digitalConsent: true, regularConsent: false }
+        { digitalConsent: false, regularConsent: false }
       );
-      await client.query(`
-        INSERT INTO public.sms_consent_events (
-          digital_forensics_registration_id, event_type, phone_snapshot,
-          purpose, policy_version, source
-        )
-        VALUES (
-          $1, 'withdrawal', '+233241234567',
-          'SMS notifications confirming successful payment for a Cybanext programme.',
-          'sms-payment-success-v1', 'digital_forensics_standalone'
-        )
-      `, [fixtures.digital.id]);
 
       const payments = await verifySmsPaymentFixtures(
         digitalStore, regularStore, fixtures
@@ -1124,7 +1564,7 @@ if (!enabled) {
     }
   });
 
-  test('SMS worker suppresses delivery after withdrawal for both registration types', async () => {
+  test('SMS worker suppresses delivery when consent phone no longer matches for both registration types', async () => {
     await reset();
     await migrate();
     const suffix = crypto.randomUUID().replace(/-/g, '');
@@ -1148,28 +1588,14 @@ if (!enabled) {
       );
       await verifySmsPaymentFixtures(digitalStore, regularStore, fixtures);
       await client.query(`
-        INSERT INTO public.sms_consent_events (
-          digital_forensics_registration_id, event_type, phone_snapshot,
-          purpose, policy_version, source, occurred_at
-        )
-        VALUES (
-          $1, 'withdrawal', '+233241234567',
-          'SMS notifications confirming successful payment for a Cybanext programme.',
-          'sms-payment-success-v1', 'digital_forensics_standalone',
-          clock_timestamp() + INTERVAL '1 second'
-        )
+        UPDATE public.digital_forensics_registrations
+        SET phone = '+233201234567'
+        WHERE registration_id = $1
       `, [fixtures.digital.id]);
       await client.query(`
-        INSERT INTO public.sms_consent_events (
-          regular_track_registration_id, event_type, phone_snapshot,
-          purpose, policy_version, source, occurred_at
-        )
-        VALUES (
-          $1, 'withdrawal', '+233241234567',
-          'SMS notifications confirming successful payment for a Cybanext programme.',
-          'sms-payment-success-v1', 'main_application',
-          clock_timestamp() + INTERVAL '1 second'
-        )
+        UPDATE public.regular_track_applicants
+        SET phone = '+233201234567'
+        WHERE registration_id = $1
       `, [fixtures.regular.id]);
 
       const results = await processDueEvents(10);
@@ -1761,7 +2187,7 @@ if (!enabled) {
     await query('DROP INDEX public.digital_forensics_registrations_email_idx');
     await assert.rejects(migrate(), /Migration operation failed/);
     assert.equal((await query("SELECT to_regclass('public.digital_forensics_registrations_email_idx') AS index_name"))[0].index_name, null);
-    assert.equal((await query("SELECT count(*)::int AS count FROM public.schema_migrations"))[0].count, 6);
+    assert.equal((await query("SELECT count(*)::int AS count FROM public.schema_migrations"))[0].count, MIGRATION_FILES.length);
     assert.equal((await query("SELECT full_name FROM public.digital_forensics_registrations WHERE registration_id = 'drift-preservation'"))[0].full_name, 'Drift Check');
   });
 
@@ -1893,6 +2319,13 @@ if (!enabled) {
   test('ordinary owner-only default table and column ACLs are accepted', async () => {
     await reset();
     await migrate();
+    const defaultAclTables = EXPECTED_TABLES.filter((name) =>
+      ![
+        'sms_consent_events',
+        'sms_current_consent',
+        'regular_track_applicants',
+        'digital_forensics_registrations'
+      ].includes(name));
     const aclDefaults = await query(`
       SELECT c.relname AS table_name, c.relacl IS NULL AS default_table_acl,
              bool_and(a.attacl IS NULL) AS default_column_acls
@@ -1903,8 +2336,8 @@ if (!enabled) {
         AND c.relname = ANY($1::text[])
         AND a.attnum > 0 AND NOT a.attisdropped
       GROUP BY c.relname, c.relacl
-    `, [EXPECTED_TABLES]);
-    assert.equal(aclDefaults.length, EXPECTED_TABLES.length);
+    `, [defaultAclTables]);
+    assert.equal(aclDefaults.length, defaultAclTables.length);
     assert.ok(aclDefaults.every((row) => row.default_table_acl && row.default_column_acls));
     await assert.doesNotReject(migrate());
   });
@@ -1941,7 +2374,7 @@ if (!enabled) {
     await reset();
     for (const migration of loadMigrations()) for (const statement of migration.statements) await query(statement);
     await migrate({ adoptExisting: true });
-    assert.equal((await query('SELECT count(*)::int AS count FROM public.schema_migrations'))[0].count, 6);
+    assert.equal((await query('SELECT count(*)::int AS count FROM public.schema_migrations'))[0].count, MIGRATION_FILES.length);
     assert.equal((await query("SELECT to_regclass('public.digital_forensics_registrations') AS table_name"))[0].table_name, 'digital_forensics_registrations');
     await reset();
     for (const migration of loadMigrations()) for (const statement of migration.statements) await query(statement);
@@ -1987,7 +2420,7 @@ if (!enabled) {
     assert.equal(result.upgradedLegacySchema, true);
     assert.equal(
       (await query('SELECT count(*)::int AS count FROM public.schema_migrations'))[0].count,
-      6
+      MIGRATION_FILES.length
     );
     assert.equal(
       (await query("SELECT to_regclass('public.email_notification_outbox') AS table_name"))[0].table_name,
@@ -2058,7 +2491,7 @@ if (!enabled) {
     await reset();
     const results = await Promise.all([migrate(), migrate()]);
     assert.equal(results.length, 2);
-    assert.equal((await query('SELECT count(*)::int AS count FROM public.schema_migrations'))[0].count, 6);
+    assert.equal((await query('SELECT count(*)::int AS count FROM public.schema_migrations'))[0].count, MIGRATION_FILES.length);
   });
 
   test('regular-track payment attempts serialize per applicant and allow safe retries', async () => {
@@ -2297,11 +2730,12 @@ if (!enabled) {
     }
   });
 
-  test('dry run does not connect; errors are sanitized; remote targets are refused', async () => {
+    test('dry run does not connect; errors are sanitized; remote targets are refused', async () => {
     let created = false;
     const dry = await runTestMigrations({ connectionUrl: connectionString, apply: false, createClient() { created = true; }, logger: { log() {} } });
     assert.equal(dry.applied, false); assert.equal(created, false);
     assert.doesNotMatch(sanitizeError(new Error(`password ${new URL(connectionString).password} postgresql://private`)), /password|postgresql|private/);
     await assert.rejects(runTestMigrations({ connectionUrl: 'postgresql://u:p@db.example.com/neondb', createClient: clientFactory }), /loopback/);
+    });
   });
 }

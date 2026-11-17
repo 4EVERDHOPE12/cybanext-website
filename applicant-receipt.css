@@ -1,0 +1,45 @@
+body {
+  background: #f7f6f4;
+  color: #111111;
+}
+
+.auth-card {
+  border-color: #e8e4e3;
+  border-radius: 14px;
+  box-shadow: 0 16px 42px rgb(17 17 17 / 8%);
+}
+
+.auth-intro {
+  color: #5f5b5c;
+  line-height: 1.65;
+}
+
+.auth-card input {
+  border-color: #d7d2d1;
+  border-radius: 8px;
+}
+
+.auth-card button {
+  border-radius: 8px;
+  background: #d20334;
+}
+
+.auth-card button:hover {
+  background: #b9022d;
+}
+
+.auth-card button:focus-visible,
+.auth-home-link:focus-visible {
+  outline: 3px solid rgb(210 3 52 / 35%);
+  outline-offset: 3px;
+}
+
+.auth-home-link {
+  margin-right: 1rem;
+}
+
+@media (max-width: 420px) {
+  .auth-card {
+    padding: 24px;
+  }
+}

@@ -61,7 +61,8 @@ function matchingSchemaMetadata(schema = expectedSchema()) {
   }));
   const tables = schema.tables.map((item) => ({
     table_name: item.name, relation_kind: item.kind, persistence: item.persistence,
-    row_security: item.rowSecurity, force_row_security: item.forceRowSecurity
+    row_security: item.rowSecurity, force_row_security: item.forceRowSecurity,
+    owner_role: item.ownerRole || 'migration_owner'
   }));
   const triggers = (schema.triggers || []).map((item) => ({
     table_name: item.table,
@@ -78,10 +79,37 @@ function matchingSchemaMetadata(schema = expectedSchema()) {
     language: item.language,
     security_definer: item.securityDefiner,
     public_execute: item.publicExecute,
+    owner_role: item.ownerRole || null,
+    configuration: item.configuration || [],
     other_privileges: item.otherPrivileges,
     function_source: item.source
   }));
-  return { tables, columns, constraints, indexes, triggers, functions, policies: [], privileges: [] };
+  const roles = (schema.roles || []).map((item) => ({
+    name: item.name,
+    can_login: item.canLogin,
+    superuser: item.superuser,
+    create_db: item.createDb,
+    create_role: item.createRole,
+    inherit: item.inherit,
+    replication: item.replication,
+    bypass_rls: item.bypassRls
+  }));
+  const privileges = (schema.privileges || []).map((item) => ({
+    table_name: item.table,
+    column_name: item.column,
+    grantee: item.grantee,
+    privilege_type: item.privilege,
+    is_grantable: item.grantable
+  }));
+  const schemaPrivileges = (schema.schemaPrivileges || []).map((item) => ({
+    grantee: item.grantee,
+    usage: item.usage,
+    can_create: item.create
+  }));
+  return {
+    tables, columns, constraints, indexes, triggers, functions, roles,
+    policies: [], privileges, schemaPrivileges, memberships: []
+  };
 }
 
 function parseArrayLiteral(statement, label) {
@@ -90,11 +118,22 @@ function parseArrayLiteral(statement, label) {
   return [...match[1].matchAll(/'((?:''|[^'])*)'/g)].map((item) => item[1].replaceAll("''", "'"));
 }
 
-function createSql({ historyRows = [], existingObjects = null, databaseName = 'neondb', schemaMetadata = matchingSchemaMetadata(), beforeTransaction = null, failTransaction = null } = {}) {
+function createSql({
+  historyRows = [],
+  existingObjects = null,
+  databaseName = 'neondb',
+  schemaMetadata = matchingSchemaMetadata(),
+  beforeTransaction = null,
+  failTransaction = null,
+  historyTableExists = true,
+  failReadOnlyQuery = false
+} = {}) {
   const calls = [];
   const transactions = [];
+  const readOnlyTransactions = [];
   const state = { history: historyRows.map((row) => ({ ...row })), executed: [], transactionNumber: 0 };
   let currentSchemaMetadata = schemaMetadata;
+  let closed = 0;
   const legacySchemaFixture = !schemaMetadata?.tables?.some(({ table_name }) =>
     table_name.startsWith('regular_track_'));
   let txTail = Promise.resolve();
@@ -104,6 +143,9 @@ function createSql({ historyRows = [], existingObjects = null, databaseName = 'n
     state,
     query(statement) {
       calls.push(statement);
+      if (failReadOnlyQuery && statement.includes('SELECT current_database()')) {
+        return Promise.reject(new Error('private database connection detail'));
+      }
       let value = [];
       const requestedNames = new Set(
         [...statement.matchAll(/'([^']+)'/g)].map((match) => match[1])
@@ -111,6 +153,32 @@ function createSql({ historyRows = [], existingObjects = null, databaseName = 'n
       const filterTables = (rows, key = 'table_name') =>
         rows.filter((row) => requestedNames.has(row[key]));
       if (statement.includes('SELECT current_database()')) value = [{ database_name: databaseName }];
+      else if (statement.includes("SELECT to_regclass('public.schema_migrations')")) {
+        value = [{ history_table: historyTableExists ? 'schema_migrations' : null }];
+      }
+      else if (statement.includes('SELECT filename, checksum') &&
+          statement.includes('FROM public.schema_migrations')) {
+        value = state.history.map((row) => ({ ...row }));
+      }
+      else if (statement.includes('SELECT c.relname AS relation_name')) {
+        value = [
+          ...(currentSchemaMetadata?.tables || []).map(({ table_name, relation_kind }) => ({
+            relation_name: table_name,
+            relation_kind
+          })),
+          ...(historyTableExists && !(currentSchemaMetadata?.tables || []).some(
+            ({ table_name }) => table_name === 'schema_migrations'
+          ) ? [{ relation_name: 'schema_migrations', relation_kind: 'r' }] : [])
+        ];
+      }
+      else if (statement.includes('FROM information_schema.columns')) {
+        value = (currentSchemaMetadata?.columns || []).filter(({ table_name, column_name }) =>
+          (table_name === 'applicant_magic_link_tokens' &&
+            column_name === 'regular_track_registration_id') ||
+          (table_name === 'applicant_sessions' &&
+            ['regular_track_registration_id', 'verification_registration_id',
+              'verification_regular_track_registration_id'].includes(column_name)));
+      }
       else if (statement.includes('c.relkind AS relation_kind')) value = filterTables(currentSchemaMetadata?.tables || []);
       else if (statement.includes('a.attname AS column_name')) value = filterTables(currentSchemaMetadata?.columns || []);
       else if (statement.includes('pg_get_constraintdef(con.oid, true)')) value = filterTables(currentSchemaMetadata?.constraints || []);
@@ -119,6 +187,13 @@ function createSql({ historyRows = [], existingObjects = null, databaseName = 'n
       }
       else if (statement.includes('pg_catalog.pg_trigger t')) value = currentSchemaMetadata?.triggers || [];
       else if (statement.includes('pg_catalog.pg_proc p')) value = currentSchemaMetadata?.functions || [];
+      else if (statement.includes('has_schema_privilege')) value = currentSchemaMetadata?.schemaPrivileges || [];
+      else if (statement.includes('FROM pg_catalog.pg_roles')) value = currentSchemaMetadata?.roles || [];
+      else if (statement.includes('FROM pg_catalog.pg_auth_members')) {
+        value = (currentSchemaMetadata?.memberships || []).filter((membership) =>
+          membership.role_name === 'cybanext_sms_consent_retention_owner' ||
+          membership.member_name === 'cybanext_sms_consent_retention_owner');
+      }
       else if (statement.includes('pg_catalog.pg_policy p')) value = currentSchemaMetadata?.policies || [];
       else if (statement.includes('pg_catalog.aclexplode')) value = currentSchemaMetadata?.privileges || [];
       else if (statement.includes('SELECT relname AS object_name')) {
@@ -187,6 +262,12 @@ function createSql({ historyRows = [], existingObjects = null, databaseName = 'n
           if (statement.startsWith('CREATE TABLE IF NOT EXISTS sms_notification_outbox')) {
             currentSchemaMetadata = matchingSchemaMetadata();
           }
+          if (statement.startsWith('CREATE TABLE IF NOT EXISTS applicant_payment_receipts')) {
+            currentSchemaMetadata = matchingSchemaMetadata();
+          }
+          if (statement.startsWith('ALTER TABLE public.applicant_magic_link_tokens')) {
+            currentSchemaMetadata = matchingSchemaMetadata();
+          }
           if (statement.startsWith('ALTER TABLE public.digital_forensics_registrations')) {
             currentSchemaMetadata = matchingSchemaMetadata();
           }
@@ -195,12 +276,62 @@ function createSql({ historyRows = [], existingObjects = null, databaseName = 'n
       };
       await callback(tx);
       return sql.transaction(statements);
+    },
+    async withReadOnlyTransaction(callback) {
+      const statements = ['BEGIN READ ONLY'];
+      readOnlyTransactions.push(statements);
+      const tx = {
+        async query(statement) {
+          statements.push(statement);
+          assert.match(statement, /^\s*SELECT\b/i, 'preflight may execute only SELECT queries');
+          assert.doesNotMatch(statement, /pg_advisory_[a-z_]+\s*\(/i);
+          return await sql.query(statement);
+        }
+      };
+      try {
+        const result = await callback(tx);
+        statements.push('COMMIT');
+        return result;
+      } catch (error) {
+        statements.push('ROLLBACK');
+        throw error;
+      }
+    },
+    async close() {
+      closed += 1;
+    },
+    getClosedCount() {
+      return closed;
     }
   };
+  sql.readOnlyTransactions = readOnlyTransactions;
   return sql;
 }
 
 function devArgs(extra = []) { return ['--target=development', '--apply', DEV_CONFIRM, ...extra]; }
+function preflightArgs(extra = []) { return ['--target=development', '--preflight', ...extra]; }
+
+function preflightFixture(version = 6, options = {}) {
+  const migrations = loadMigrations();
+  const schemaOptions = {
+    includeApplicantAuth: version >= 2,
+    includeRegularTrack: version >= 3,
+    includeEmailOutbox: version >= 4,
+    includePaymentFailed: version >= 4,
+    includeSmsConsent: version >= 5,
+    includeSmsOutbox: version >= 6,
+    includeApplicantReceipts: version >= 7,
+    includeReceiptResend: version >= 8,
+    includeSmsConsentRetention: version >= 9,
+    includeApplicantRegistrationSelection: version >= 10,
+    includeMigrationHistory: true
+  };
+  return {
+    historyRows: migrations.slice(0, version).map(({ filename, checksum }) => ({ filename, checksum })),
+    schemaMetadata: matchingSchemaMetadata(expectedSchema(schemaOptions)),
+    ...options
+  };
+}
 
 test('SQL splitter preserves semicolons inside literals and comments', () => {
   assert.deepEqual(splitSqlStatements("SELECT ';'; -- ignored ;\nSELECT \"semi;colon\"; /* outer ; /* inner ; */ */ SELECT $$body;value$$;"), [
@@ -211,8 +342,69 @@ test('SQL splitter preserves semicolons inside literals and comments', () => {
 test('migration files remain ordered and carry SHA-256 checksums', () => {
   const migrations = loadMigrations();
   assert.deepEqual(migrations.map(({ filename }) => filename), MIGRATION_FILES);
-  assert.deepEqual(migrations.map(({ statements }) => statements.length), [3, 6, 5, 7, 5, 16]);
+  assert.deepEqual(migrations.map(({ statements }) => statements.length), [3, 6, 5, 7, 5, 16, 1, 6, 38, 15]);
   assert.ok(migrations.every(({ checksum }) => /^[a-f0-9]{64}$/.test(checksum)));
+});
+
+test('Migration 010 preserves typed registration references and exact selection constraints', () => {
+  const migration = loadMigrations().find(({ filename }) =>
+    filename === '010_applicant_portal_registration_selection.sql');
+  const schema = expectedSchema();
+
+  assert.equal(migration.statements.length, 15);
+  assert.ok(schema.constraints.some((item) =>
+    item.table === 'applicant_magic_link_tokens' &&
+    item.references &&
+    item.references.table === 'regular_track_applicants'));
+  assert.ok(schema.constraints.some((item) =>
+    item.table === 'applicant_sessions' &&
+    item.references &&
+    item.references.table === 'digital_forensics_registrations' &&
+    item.columns.includes('verification_registration_id')));
+  assert.ok(schema.constraints.some((item) =>
+    item.table === 'applicant_sessions' &&
+    item.references &&
+    item.references.table === 'regular_track_applicants' &&
+    item.columns.includes('verification_regular_track_registration_id')));
+  assert.ok(schema.constraints.some((item) =>
+    item.table === 'applicant_sessions' &&
+    item.type === 'c' &&
+    item.definition.includes('verification_registration_id')));
+  const sessionVerificationConstraint = schema.constraints.find((item) =>
+    item.table === 'applicant_sessions' &&
+    item.type === 'c' &&
+    item.definition.includes('verification_registration_id'));
+  assert.match(
+    sessionVerificationConstraint.definition,
+    /verification_registration_id IS NULL AND verification_regular_track_registration_id IS NULL AND registration_id IS NOT NULL AND regular_track_registration_id IS NULL/i
+  );
+  assert.equal(
+    schema.columns.applicant_sessions.registration_id[1],
+    false
+  );
+  assert.equal(
+    schema.columns.applicant_sessions.verification_regular_track_registration_id[1],
+    false
+  );
+});
+
+test('Migration 008 extends only receipt resend event and rate-limit constraints', async () => {
+  const legacySchema = matchingSchemaMetadata(
+    expectedSchema({ includeReceiptResend: false })
+  );
+  await assert.doesNotReject(
+    inspectExistingSchema(createSql({ schemaMetadata: legacySchema }), {
+      includeReceiptResend: false
+    })
+  );
+  await assert.rejects(inspectExistingSchema(createSql({ schemaMetadata: legacySchema })));
+
+  const migration = loadMigrations().find(({ filename }) =>
+    filename === '008_add_applicant_receipt_resend.sql');
+  assert.match(migration.statements[1], /receipt_resend_email/);
+  assert.match(migration.statements[1], /receipt_resend_ip/);
+  assert.match(migration.statements[3], /digital_forensics_receipt_resend/);
+  assert.match(migration.statements[5], /digital_forensics_receipt_resend/);
 });
 
 test('SMS last error code constraint matches PostgreSQL normalization and keeps the inclusive 80-character limit', async () => {
@@ -227,6 +419,57 @@ test('SMS last error code constraint matches PostgreSQL normalization and keeps 
   constraint.definition =
     'CHECK (last_error_code IS NULL OR char_length(last_error_code) >= 1 AND char_length(last_error_code) < 80)';
   await assert.rejects(inspectExistingSchema(createSql({ schemaMetadata: metadata })));
+});
+
+test('SMS outbox trigger expectations match migration 006 function bodies', () => {
+  const schema = expectedSchema();
+  const migration = loadMigrations().find(({ filename }) =>
+    filename === '006_create_sms_notification_outbox.sql');
+  const expectedTriggers = [
+    {
+      triggerName: 'sms_notification_outbox_payment_success_guard',
+      functionName: 'require_paid_sms_notification_registration'
+    },
+    {
+      triggerName: 'sms_notification_outbox_retention_guard',
+      functionName: 'prevent_early_sms_notification_outbox_deletion'
+    },
+    {
+      triggerName: 'sms_notification_outbox_completion_timestamp',
+      functionName: 'set_sms_notification_outbox_completion_timestamp'
+    },
+    {
+      triggerName: 'sms_notification_outbox_no_truncate',
+      functionName: 'prevent_sms_notification_outbox_truncate'
+    }
+  ];
+  const normalizeFunctionSourceForTest = (source) =>
+    String(source).replace(/\r\n/g, '\n').trim().replace(/;\s*$/, '');
+
+  for (const { triggerName, functionName } of expectedTriggers) {
+    const trigger = schema.triggers.find(({ name }) => name === triggerName);
+    const expectedFunction = schema.functions.find(({ name }) => name === functionName);
+    const migrationStatement = migration.statements.find((statement) =>
+      statement.trimStart().startsWith(`CREATE OR REPLACE FUNCTION public.${functionName}()`));
+    const migrationBody = migrationStatement?.match(/\bAS\s+\$\$([\s\S]*?)\$\$/i)?.[1];
+
+    assert.ok(trigger, `Missing expected trigger ${triggerName}`);
+    assert.ok(expectedFunction, `Missing expected function ${functionName}`);
+    assert.ok(migrationBody, `Missing migration body for ${functionName}`);
+    assert.equal(trigger.table, 'sms_notification_outbox');
+    assert.equal(trigger.functionName, functionName);
+    assert.match(trigger.definition, new RegExp(`EXECUTE FUNCTION ${functionName}\\(\\)`));
+    assert.equal(
+      normalizeFunctionSourceForTest(expectedFunction.source),
+      normalizeFunctionSourceForTest(migrationBody),
+      `Expected function ${functionName} must match migration 006`
+    );
+    assert.equal(
+      normalizeFunctionSourceForTest(trigger.functionSource),
+      normalizeFunctionSourceForTest(migrationBody),
+      `Expected trigger ${triggerName} must match migration 006`
+    );
+  }
 });
 
 test('regular-track persistence is included in the exact expected migration schema', () => {
@@ -255,11 +498,22 @@ test('regular-track persistence is included in the exact expected migration sche
     schema.triggers.map(({ name }) => name).sort(),
     [
       'sms_consent_events_append_only',
+      'sms_consent_events_no_truncate',
+      'sms_current_consent_append_only',
+      'sms_current_consent_no_truncate',
       'sms_notification_outbox_completion_timestamp',
       'sms_notification_outbox_no_truncate',
       'sms_notification_outbox_payment_success_guard',
       'sms_notification_outbox_retention_guard'
     ]
+  );
+  assert.ok(schema.tables.some(({ name }) => name === 'sms_current_consent'));
+  assert.deepEqual(
+    schema.indexes
+      .filter(({ table, unique }) => table === 'sms_current_consent' && unique)
+      .map(({ columns }) => columns[0])
+      .sort(),
+    ['digital_forensics_registration_id', 'regular_track_registration_id']
   );
   const paymentGuard = schema.functions.find(({ name }) =>
     name === 'require_paid_sms_notification_registration');
@@ -283,8 +537,82 @@ test('regular-track persistence is included in the exact expected migration sche
   );
   assert.deepEqual(
     schema.functions.map(({ otherPrivileges }) => otherPrivileges),
-    schema.functions.map(() => [])
+    schema.functions.map(({ name }) => {
+      if (name === 'purge_expired_sms_consent_events') {
+        return ['cybanext_sms_consent_retention_operator:EXECUTE:false'];
+      }
+      if (name === 'record_sms_consent') {
+        return ['cybanext_sms_consent_application:EXECUTE:false'];
+      }
+      return [];
+    })
   );
+  const consentPurge = schema.functions.find(({ name }) =>
+    name === 'purge_expired_sms_consent_events');
+  assert.equal(consentPurge.securityDefiner, true);
+  assert.equal(consentPurge.publicExecute, false);
+  assert.equal(consentPurge.ownerRole, 'cybanext_sms_consent_retention_owner');
+  assert.match(consentPurge.source, /LIMIT 1000/);
+  assert.deepEqual(schema.roles.map(({ name }) => name).sort(), [
+    'cybanext_sms_consent_application',
+    'cybanext_sms_consent_retention_operator',
+    'cybanext_sms_consent_retention_owner'
+  ]);
+  assert.deepEqual(
+    schema.privileges.map(({ table, column, privilege }) =>
+      `${table}.${column || '*'}:${privilege}`).sort(),
+    [
+      'digital_forensics_registrations.phone:SELECT',
+      'digital_forensics_registrations.registration_id:SELECT',
+      'regular_track_applicants.phone:SELECT',
+      'regular_track_applicants.registration_id:SELECT',
+      'sms_current_consent.*:SELECT'
+    ]
+  );
+});
+
+test('migration schema validation checks consent table ownership and permits a controlled operator member', async () => {
+  const schema = matchingSchemaMetadata();
+  schema.memberships = [{
+    role_name: 'cybanext_sms_consent_retention_operator',
+    member_name: 'sms_retention_maintenance'
+  }];
+  await assert.doesNotReject(inspectExistingSchema(createSql({ schemaMetadata: schema })));
+
+  const incorrectOwner = matchingSchemaMetadata();
+  incorrectOwner.tables.find(({ table_name }) =>
+    table_name === 'sms_consent_events').owner_role = 'application_login';
+  await assert.rejects(
+    inspectExistingSchema(createSql({ schemaMetadata: incorrectOwner })),
+    /tables and row-level security settings/
+  );
+});
+
+test('receipt schema is private-path-only and unique to a verified Digital Forensics payment', () => {
+  const schema = expectedSchema();
+  assert.ok(schema.tables.some(({ name }) => name === 'applicant_payment_receipts'));
+  assert.deepEqual(
+    schema.indexes
+      .filter(({ table, unique }) => table === 'applicant_payment_receipts' && unique)
+      .map(({ columns }) => columns[0])
+      .sort(),
+    [
+      'blob_pathname',
+      'payment_reference',
+      'receipt_id',
+      'receipt_number',
+      'registration_id',
+      'verified_transaction_id'
+    ]
+  );
+  assert.ok(schema.constraints.some((item) =>
+    item.table === 'applicant_payment_receipts' &&
+    item.type === 'f' &&
+    item.references?.table === 'digital_forensics_registrations' &&
+    item.references.deleteAction === 'r'));
+  assert.ok(schema.columns.applicant_payment_receipts.blob_pathname);
+  assert.equal(schema.columns.applicant_payment_receipts.blob_pathname[1], false);
+  assert.equal(schema.columns.applicant_payment_receipts.blob_url, undefined);
 });
 
 test('schema inspection propagates legacy SMS-consent and outbox options', async () => {
@@ -413,13 +741,12 @@ test('development adoption upgrades an exact pre-004 schema in migration order',
   });
 
   assert.equal(result.upgradedLegacySchema, true);
+  const emailOutboxStatements = loadMigrations()[3].statements;
   assert.deepEqual(
     sql.transactions[0]
-      .filter(({ statement }) => statement.startsWith('ALTER TABLE') ||
-        statement.includes('CREATE TABLE IF NOT EXISTS email_notification_outbox') ||
-        statement.includes('CREATE INDEX IF NOT EXISTS email_notification_outbox'))
+      .filter(({ statement }) => emailOutboxStatements.includes(statement))
       .map(({ statement }) => statement),
-    loadMigrations()[3].statements
+    emailOutboxStatements
   );
   const consentAndOutboxStatements = loadMigrations().slice(4)
     .flatMap(({ statements }) => statements);
@@ -459,6 +786,29 @@ test('development adoption applies migration 006 to an exact pre-006 schema', as
   );
 });
 
+test('development adoption applies migration 007 to an exact pre-receipt schema', async () => {
+  const sql = createSql({
+    schemaMetadata: matchingSchemaMetadata(expectedSchema({
+      includeApplicantReceipts: false
+    }))
+  });
+
+  const result = await runMigrations({
+    args: devArgs(['--adopt-existing']),
+    environment: environment(),
+    createClient: () => sql,
+    logger: createLogger()
+  });
+
+  assert.equal(result.upgradedLegacySchema, true);
+  assert.deepEqual(
+    sql.transactions[0]
+      .filter(({ statement }) => statement === loadMigrations()[6].statements[0])
+      .map(({ statement }) => statement),
+    loadMigrations()[6].statements
+  );
+});
+
 test('dry-run creates no client, connection, or SQL execution', async () => {
   const logger = createLogger();
   let clientCreated = false;
@@ -469,6 +819,208 @@ test('dry-run creates no client, connection, or SQL execution', async () => {
   assert.equal(result.applied, false);
   assert.equal(clientCreated, false);
   assert.match(logger.messages[0], /No database connection or SQL execution/);
+});
+
+test('preflight refuses production and migration-application combinations', async () => {
+  let clientCreated = false;
+  await assert.rejects(runMigrations({
+    args: ['--target=production', '--preflight'],
+    createClient() { clientCreated = true; return createSql(); }
+  }), /only supported with --target=development/);
+  assert.throws(() => parseArguments(preflightArgs(['--apply'])), /cannot be combined with --apply/);
+  assert.equal(clientCreated, false);
+});
+
+test('preflight refuses missing or ambiguous development configuration before client creation', async () => {
+  const invalidEnvironments = [
+    { ...environment(), DATABASE_URL: undefined },
+    {
+      ...environment(),
+      DATABASE_URL: 'postgresql://redacted@prod-endpoint.us-east-1.aws.neon.tech/neondb'
+    },
+    { ...environment(), MIGRATION_DEV_ENDPOINT_HOST: '' },
+    {
+      ...environment(),
+      MIGRATION_PRODUCTION_ENDPOINT_HOST: 'dev-endpoint.us-east-1.aws.neon.tech'
+    }
+  ];
+  for (const invalidEnvironment of invalidEnvironments) {
+    let clientCreated = false;
+    await assert.rejects(runMigrations({
+      args: preflightArgs(),
+      environment: invalidEnvironment,
+      createClient() { clientCreated = true; return createSql(); },
+      logger: createLogger()
+    }));
+    assert.equal(clientCreated, false);
+  }
+});
+
+test('preflight does not fall back to an ambient DATABASE_URL', async () => {
+  const previous = process.env.DATABASE_URL;
+  process.env.DATABASE_URL = 'postgresql://ambient@prod-endpoint.us-east-1.aws.neon.tech/neondb';
+  let clientCreated = false;
+  try {
+    await assert.rejects(runMigrations({
+      args: preflightArgs(),
+      environment: {
+        MIGRATION_DEV_ENDPOINT_HOST: 'dev-endpoint.us-east-1.aws.neon.tech',
+        MIGRATION_PRODUCTION_ENDPOINT_HOST: 'prod-endpoint.us-east-1.aws.neon.tech'
+      },
+      createClient() { clientCreated = true; return createSql(); },
+      logger: createLogger()
+    }), /DATABASE_URL is required/);
+  } finally {
+    if (previous === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = previous;
+  }
+  assert.equal(clientCreated, false);
+});
+
+test('preflight requires an explicit Node environment file when called from the CLI environment', async () => {
+  const previous = process.env.DATABASE_URL;
+  process.env.DATABASE_URL = 'postgresql://ambient@prod-endpoint.us-east-1.aws.neon.tech/neondb';
+  let clientCreated = false;
+  try {
+    await assert.rejects(runMigrations({
+      args: preflightArgs(),
+      createClient() { clientCreated = true; return createSql(); },
+      logger: createLogger()
+    }), /explicit Node --env-file/);
+  } finally {
+    if (previous === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = previous;
+  }
+  assert.equal(clientCreated, false);
+});
+
+test('preflight refuses a connected database other than neondb and closes the client', async () => {
+  const sql = createSql({ ...preflightFixture(6), databaseName: 'other_database' });
+  await assert.rejects(runMigrations({
+    args: preflightArgs(),
+    environment: environment(),
+    createClient: () => sql,
+    logger: createLogger()
+  }), /expected database/);
+  assert.equal(sql.getClosedCount(), 1);
+  assert.deepEqual(sql.state.executed, []);
+});
+
+test('read-only preflight reports pending migrations without applying or locking', async () => {
+  const migrations = loadMigrations();
+  const sql = createSql(preflightFixture(6));
+  const originalHistory = structuredClone(sql.state.history);
+  const logger = createLogger();
+  const report = await runMigrations({
+    args: preflightArgs(),
+    environment: environment(),
+    createClient: () => sql,
+    logger
+  });
+
+  assert.equal(report.ready, true);
+  assert.deepEqual(report.history.appliedMigrations, migrations.slice(0, 6).map(({ filename }) => filename));
+  assert.deepEqual(report.pendingMigrations, migrations.slice(6).map(({ filename }) => filename));
+  assert.deepEqual(sql.state.history, originalHistory);
+  assert.deepEqual(sql.state.executed, []);
+  assert.equal(sql.getClosedCount(), 1);
+  const statements = sql.readOnlyTransactions[0];
+  assert.equal(statements[0], 'BEGIN READ ONLY');
+  assert.equal(statements.at(-1), 'COMMIT');
+  for (const statement of statements.slice(1, -1)) {
+    assert.match(statement, /^\s*SELECT\b/i);
+    assert.doesNotMatch(statement, /\b(?:INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE)\b/i);
+    assert.doesNotMatch(statement, /pg_advisory_[a-z_]+\s*\(/i);
+  }
+  assert.match(logger.messages.join('\n'), /Pending migrations: 007_create_applicant_payment_receipts\.sql, 008_add_applicant_receipt_resend\.sql/);
+});
+
+test('read-only preflight closes the client when database validation fails', async () => {
+  const sql = createSql({ ...preflightFixture(6), failReadOnlyQuery: true });
+  await assert.rejects(runMigrations({
+    args: preflightArgs(),
+    environment: environment(),
+    createClient: () => sql,
+    logger: createLogger()
+  }));
+  assert.equal(sql.getClosedCount(), 1);
+  assert.equal(sql.readOnlyTransactions[0].at(-1), 'ROLLBACK');
+  assert.deepEqual(sql.state.executed, []);
+});
+
+test('preflight reports migration checksum mismatches with expected and recorded values', async () => {
+  const migrations = loadMigrations();
+  const fixture = preflightFixture(6);
+  fixture.historyRows[3].checksum = '0'.repeat(64);
+  const sql = createSql(fixture);
+  const report = await runMigrations({
+    args: preflightArgs(),
+    environment: environment(),
+    createClient: () => sql,
+    logger: createLogger()
+  });
+
+  assert.equal(report.ready, false);
+  assert.deepEqual(report.history.checksumMismatches, [{
+    filename: migrations[3].filename,
+    expected: migrations[3].checksum,
+    recorded: '0'.repeat(64)
+  }]);
+  assert.deepEqual(report.pendingMigrations, migrations.slice(6).map(({ filename }) => filename));
+  assert.equal(sql.getClosedCount(), 1);
+  assert.deepEqual(sql.state.executed, []);
+});
+
+test('preflight reports a missing or out-of-order migration history without inferring pending work', async () => {
+  const missingSql = createSql({
+    ...preflightFixture(6),
+    historyTableExists: false
+  });
+  const missing = await runMigrations({
+    args: preflightArgs(),
+    environment: environment(),
+    createClient: () => missingSql,
+    logger: createLogger()
+  });
+  assert.equal(missing.ready, false);
+  assert.deepEqual(missing.pendingMigrations, null);
+  assert.match(missing.history.errors[0], /history table is missing/);
+  assert.equal(missingSql.getClosedCount(), 1);
+
+  const outOfOrderFixture = preflightFixture(6);
+  outOfOrderFixture.historyRows.reverse();
+  const outOfOrderSql = createSql(outOfOrderFixture);
+  const outOfOrder = await runMigrations({
+    args: preflightArgs(),
+    environment: environment(),
+    createClient: () => outOfOrderSql,
+    logger: createLogger()
+  });
+  assert.equal(outOfOrder.ready, false);
+  assert.deepEqual(outOfOrder.pendingMigrations, null);
+  assert.match(outOfOrder.history.errors.join('\n'), /ordered prefix/);
+  assert.deepEqual(outOfOrderSql.state.executed, []);
+});
+
+test('preflight rejects unexpected schema relations and schema drift at the recorded version', async () => {
+  const fixture = preflightFixture(6);
+  fixture.schemaMetadata.tables.push({
+    table_name: 'unexpected_table',
+    relation_kind: 'r',
+    persistence: 'p',
+    row_security: false,
+    force_row_security: false
+  });
+  const sql = createSql(fixture);
+  const report = await runMigrations({
+    args: preflightArgs(),
+    environment: environment(),
+    createClient: () => sql,
+    logger: createLogger()
+  });
+  assert.equal(report.ready, false);
+  assert.equal(report.schema.error, 'unexpected public relations');
+  assert.deepEqual(sql.state.executed, []);
 });
 
 test('development and production require their distinct exact confirmations', () => {

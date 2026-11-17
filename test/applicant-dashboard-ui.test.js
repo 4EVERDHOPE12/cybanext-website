@@ -64,6 +64,10 @@ class FakeElement {
   }
 
   click() {
+    if (this.disabled) {
+      return undefined;
+    }
+    this.clickCount = (this.clickCount || 0) + 1;
     const listener = this.listeners.get('click');
     return listener ? listener({ currentTarget: this, preventDefault() {} }) : undefined;
   }
@@ -87,13 +91,17 @@ class FakeElement {
   }
 }
 
-async function createDashboardHarness(applicant, initialHash = '') {
+async function createDashboardHarness(applicant, initialHash = '', options = {}) {
   const ids = [
     'menuToggleButton',
     'primaryNavigation',
     'logoutButton',
     'supportLink',
     'payNowButton',
+    'receiptActions',
+    'downloadReceiptButton',
+    'resendReceiptButton',
+    'receiptActionMessage',
     'welcomeName',
     'userNameLabel',
     'applicationReferenceText',
@@ -145,14 +153,17 @@ async function createDashboardHarness(applicant, initialHash = '') {
   });
 
   const documentListeners = new Map();
+  const createdElements = [];
   const document = {
     activeElement: null,
     getElementById(id) {
       return elements.get(id) || null;
     },
-    createElement() {
+    createElement(tagName) {
       const element = new FakeElement();
+      element.tagName = tagName;
       element.ownerDocument = document;
+      createdElements.push(element);
       return element;
     },
     addEventListener(name, callback) {
@@ -168,6 +179,7 @@ async function createDashboardHarness(applicant, initialHash = '') {
   });
 
   const windowListeners = new Map();
+  const fetchCalls = [];
   const location = {
     hash: initialHash,
     replacedWith: null,
@@ -184,17 +196,38 @@ async function createDashboardHarness(applicant, initialHash = '') {
     window: {
       innerWidth: 390,
       location,
+      URL: {
+        createObjectURL() { return 'blob:receipt'; },
+        revokeObjectURL() {}
+      },
+      setTimeout(callback) {
+        callback();
+        return 0;
+      },
       addEventListener(name, callback) {
         windowListeners.set(name, callback);
       }
     },
-    fetch: async (url) => {
-      assert.equal(url, '/api/applicant-session?includeDashboard=true');
+    fetch: async (url, requestOptions = {}) => {
+      fetchCalls.push({ url, options: requestOptions });
+      if (url !== '/api/applicant-session?includeDashboard=true') {
+        if (typeof options.receiptResponse === 'function') {
+          return options.receiptResponse(url, requestOptions);
+        }
+        return options.receiptResponse || {
+          status: 202,
+          ok: true,
+          async json() { return { message: 'Your receipt email request has been accepted.' }; }
+        };
+      }
       return {
         status: 200,
         ok: true,
         async json() {
-          return { authenticated: true, applicant };
+          return options.dashboardResponse || {
+            authenticated: true,
+            applicant
+          };
         }
       };
     },
@@ -210,7 +243,9 @@ async function createDashboardHarness(applicant, initialHash = '') {
     location,
     window: sandbox.window,
     documentListeners,
-    windowListeners
+    windowListeners,
+    fetchCalls,
+    createdElements
   };
 }
 
@@ -473,6 +508,145 @@ test('dashboard renders pending, failed, initiated, verified, legacy-paid, and u
   }
 });
 
+test('receipt actions require server-reported eligibility and verified Digital Forensics payment', async () => {
+  const pending = await createDashboardHarness(applicant({
+    canDownloadReceipt: true,
+    canResendReceipt: true
+  }));
+  assert.equal(pending.elements.get('receiptActions').hidden, true);
+
+  const verifiedWithoutReceipt = await createDashboardHarness(applicant({
+    status: 'payment_verified'
+  }));
+  assert.equal(verifiedWithoutReceipt.elements.get('receiptActions').hidden, true);
+
+  const eligible = await createDashboardHarness(applicant({
+    status: 'payment_verified',
+    canDownloadReceipt: true,
+    canResendReceipt: true
+  }));
+  assert.equal(eligible.elements.get('receiptActions').hidden, false);
+
+  const otherTrack = await createDashboardHarness(applicant({
+    track: 'Incident Response',
+    status: 'payment_verified',
+    canDownloadReceipt: true,
+    canResendReceipt: true
+  }));
+  assert.equal(otherTrack.elements.get('receiptActions').hidden, true);
+});
+
+test('regular-track dashboard does not expose Digital Forensics payment or receipt actions', async () => {
+  const harness = await createDashboardHarness(applicant({
+    registrationId: 'RT-2026-123',
+    track: 'Incident Response',
+    status: 'pending',
+    amountDue: 34650,
+    canPay: false,
+    canDownloadReceipt: true,
+    canResendReceipt: true
+  }));
+
+  assert.equal(harness.elements.get('payNowButton').hidden, true);
+  assert.equal(harness.elements.get('receiptActions').hidden, true);
+  assert.equal(
+    harness.elements.get('applicationReferenceValue').textContent,
+    'RT-2026-123'
+  );
+  assert.equal(
+    harness.elements.get('amountValue').textContent,
+    'GH₵34,650.00'
+  );
+});
+
+test('dashboard redirects verified but unselected sessions to registration selection', async () => {
+  const harness = await createDashboardHarness(null, '', {
+    dashboardResponse: {
+      authenticated: true,
+      selectionRequired: true
+    }
+  });
+
+  assert.equal(
+    harness.location.replacedWith,
+    '/applicant-registration-selection.html'
+  );
+});
+
+test('receipt download shows loading and success states while disabling repeated actions', async () => {
+  let resolveResponse;
+  const pendingResponse = new Promise((resolve) => {
+    resolveResponse = resolve;
+  });
+  const harness = await createDashboardHarness(applicant({
+    status: 'payment_verified',
+    canDownloadReceipt: true,
+    canResendReceipt: true
+  }), '', { receiptResponse: () => pendingResponse });
+  const downloadButton = harness.elements.get('downloadReceiptButton');
+  const resendButton = harness.elements.get('resendReceiptButton');
+
+  const action = downloadButton.click();
+  assert.equal(downloadButton.disabled, true);
+  assert.equal(resendButton.disabled, true);
+  assert.match(
+    harness.elements.get('receiptActionMessage').textContent,
+    /Processing/
+  );
+  assert.equal(resendButton.click(), undefined);
+  assert.equal(harness.fetchCalls.length, 2);
+
+  resolveResponse({
+    status: 200,
+    ok: true,
+    async blob() { return Buffer.from('%PDF-1.4'); }
+  });
+  await action;
+
+  const request = harness.fetchCalls[1];
+  assert.equal(request.url, '/api/applicant-session');
+  assert.deepEqual(JSON.parse(request.options.body), {
+    action: 'download-receipt'
+  });
+  assert.equal(request.options.credentials, 'same-origin');
+  assert.equal(downloadButton.disabled, false);
+  assert.equal(resendButton.disabled, false);
+  assert.match(
+    harness.elements.get('receiptActionMessage').textContent,
+    /download has started/
+  );
+  const downloadLink = harness.createdElements[harness.createdElements.length - 1];
+  assert.equal(downloadLink.download, 'Cybanext-Payment-Receipt.pdf');
+  assert.equal(downloadLink.clickCount, 1);
+});
+
+test('receipt resend displays server failures and recovers its controls', async () => {
+  const harness = await createDashboardHarness(applicant({
+    status: 'payment_verified',
+    canDownloadReceipt: true,
+    canResendReceipt: true
+  }), '', {
+    receiptResponse: {
+      status: 503,
+      ok: false,
+      async json() { return { error: 'Receipt service is unavailable.' }; }
+    }
+  });
+
+  await harness.elements.get('resendReceiptButton').click();
+
+  assert.equal(harness.fetchCalls[1].url, '/api/applicant-session');
+  assert.deepEqual(JSON.parse(harness.fetchCalls[1].options.body), {
+    action: 'resend-receipt'
+  });
+  assert.equal(harness.elements.get('downloadReceiptButton').disabled, false);
+  assert.equal(harness.elements.get('resendReceiptButton').disabled, false);
+  assert.equal(
+    harness.elements.get('receiptActionMessage').textContent,
+    'Receipt service is unavailable.'
+  );
+});
+
 test('application navigation and footer have real document destinations outside the header', () => {
   const html = fs.readFileSync(htmlPath, 'utf8');
   const css = fs.readFileSync(cssPath, 'utf8');
@@ -491,7 +665,9 @@ test('application navigation and footer have real document destinations outside 
   assert.ok(footerStart > mainEnd);
   assert.ok(footerStart > navEnd);
   assert.match(html.slice(footerStart), /© 2026 Cybanext\. All rights reserved\./);
-  assert.doesNotMatch(html, />\s*(?:Download|Resend)\s+receipt/i);
+  assert.match(html, /id="receiptActions"[^>]*hidden/);
+  assert.match(html, />\s*Download receipt\s*</);
+  assert.match(html, />\s*Resend receipt\s*</);
   assert.doesNotMatch(html, /role="tab"/);
   assert.match(css, /@media \(max-width: 820px\)/);
   assert.match(css, /\.primary-nav\s*\{[^}]*position:\s*fixed;/s);

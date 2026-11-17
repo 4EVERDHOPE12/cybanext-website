@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="referrer" content="no-referrer">
+  <title>Choose an Application | Cybanext</title>
+  <link rel="icon" type="image/png" href="assets/images/CYBANEXT ICON.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="applicant-auth.css">
+  <script src="applicant-registration-selection.js" defer></script>
+</head>
+<body>
+  <main class="auth-shell">
+    <a class="auth-logo" href="/" aria-label="Cybanext home">
+      <img src="assets/images/CYBANEXT NB (3).png" alt="Cybanext">
+    </a>
+    <section class="auth-card" aria-labelledby="selection-title">
+      <p class="auth-eyebrow">Applicant portal</p>
+      <h1 id="selection-title">Choose an application</h1>
+      <p class="auth-intro">Select the registration you want to view.</p>
+      <ul id="registrationOptions" class="registration-options" aria-label="Your registrations"></ul>
+      <p id="selectionMessage" class="auth-message" role="status" aria-live="polite">
+        Loading your registrations…
+      </p>
+      <a class="auth-home-link" href="/applicant-login.html">Request another sign-in link</a>
+      <a class="auth-home-link" href="/">Return to Cybanext</a>
+    </section>
+  </main>
+</body>
+</html>

@@ -33,9 +33,32 @@ if (hamburgerBtn && mainNav) {
   });
 
   /* Close mobile menu after selecting a link */
-  const navLinks = mainNav.querySelectorAll('a');
+  const navLinks = Array.from(mainNav.querySelectorAll('a'));
+  const setCurrentNavigation = (currentLink) => {
+    navLinks.forEach((link) => {
+      if (link === currentLink) {
+        link.setAttribute('aria-current', 'page');
+      } else {
+        link.removeAttribute('aria-current');
+      }
+    });
+  };
+  const synchronizeCurrentNavigation = () => {
+    const currentHref = window.location.hash || '#';
+    const currentLink = navLinks.find(
+      (link) => link.getAttribute('href') === currentHref
+    );
+    setCurrentNavigation(currentLink);
+  };
+
+  synchronizeCurrentNavigation();
+  window.addEventListener('hashchange', synchronizeCurrentNavigation);
+
   navLinks.forEach((link) => {
     link.addEventListener('click', () => {
+      if (link.getAttribute('href').startsWith('#')) {
+        setCurrentNavigation(link);
+      }
       if (mainNav.classList.contains('open')) {
         closeDrawer();
       }

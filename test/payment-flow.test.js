@@ -29,6 +29,8 @@ const digitalForensicsDatabase =
   require('../lib/digital-forensics-database');
 const digitalForensicsStore =
   require('../lib/digital-forensics-store');
+const applicantPaymentReceipts =
+  require('../lib/applicant-payment-receipts');
 
 function createApplicantToken(
   track = 'incident_response',
@@ -60,6 +62,9 @@ function createResponse() {
 function withFakeDigitalForensicsDatabase(t) {
   const originalQuery = digitalForensicsDatabase.query;
   const originalTransaction = digitalForensicsDatabase.transaction;
+  const originalEnsureReceipt =
+    applicantPaymentReceipts.ensureReceiptForRegistration;
+  const receiptCalls = [];
   const registrations = new Map();
   const applicants = new Map();
   const attempts = new Map();
@@ -74,7 +79,6 @@ function withFakeDigitalForensicsDatabase(t) {
       !registration ||
       registration.status !== 'payment_verified' ||
       !consent ||
-      consent.eventType !== 'grant' ||
       consent.phoneSnapshot !== registration.phone ||
       !/^\+233[0-9]{9}$/.test(registration.phone || '')
     ) {
@@ -158,7 +162,6 @@ function withFakeDigitalForensicsDatabase(t) {
           phone,
           track,
           ,
-          ,
           smsConsent
         ] = values;
         const timestamp = new Date().toISOString();
@@ -183,7 +186,6 @@ function withFakeDigitalForensicsDatabase(t) {
         if (smsConsent === true) {
           smsConsents.set(id, {
             registrationId: id,
-            eventType: 'grant',
             phoneSnapshot: phone,
             source: 'regular_track_registration'
           });
@@ -219,11 +221,10 @@ function withFakeDigitalForensicsDatabase(t) {
           updatedAt: timestamp
         };
         registrations.set(id, row);
-        const smsConsent = values[7] === true;
+        const smsConsent = values[6] === true;
         if (smsConsent) {
           smsConsents.set(id, {
             registrationId: id,
-            eventType: 'grant',
             phoneSnapshot: phone,
             source: 'digital_forensics_standalone'
           });
@@ -517,9 +518,17 @@ function withFakeDigitalForensicsDatabase(t) {
 
   digitalForensicsDatabase.query = fake.query.bind(fake);
   digitalForensicsDatabase.transaction = fake.transaction.bind(fake);
+  const setReceiptGenerator = (generator) => {
+    applicantPaymentReceipts.ensureReceiptForRegistration = async (id) => {
+      receiptCalls.push(id);
+      return generator(id);
+    };
+  };
+  setReceiptGenerator(async () => ({ generationStatus: 'ready' }));
   t.after(() => {
     digitalForensicsDatabase.query = originalQuery;
     digitalForensicsDatabase.transaction = originalTransaction;
+    applicantPaymentReceipts.ensureReceiptForRegistration = originalEnsureReceipt;
   });
 
   return {
@@ -531,7 +540,9 @@ function withFakeDigitalForensicsDatabase(t) {
     attempts,
     smsConsents,
     statements,
-    transactionCalls
+    transactionCalls,
+    receiptCalls,
+    setReceiptGenerator
   };
 }
 
@@ -754,7 +765,6 @@ test('Digital Forensics registration records can be created, found, and updated'
   assert.equal(registration.status, 'pending');
   assert.deepEqual(smsConsents.get(registration.id), {
     registrationId: registration.id,
-    eventType: 'grant',
     phoneSnapshot: '+233201234567',
     source: 'digital_forensics_standalone'
   });
@@ -2017,7 +2027,7 @@ test('regular payment verification persists success and is idempotent', async (t
   );
   assert.match(paymentTransaction[0], /UPDATE regular_track_payment_attempts/);
   assert.match(paymentTransaction[0], /INSERT INTO email_notification_outbox/);
-  assert.match(paymentTransaction[1], /consent\.event_type = 'grant'/);
+  assert.match(paymentTransaction[1], /JOIN sms_current_consent AS consent/);
 
   const duplicateResponse = createResponse();
   await verifyPayment({ method: 'POST', body: { reference } }, duplicateResponse);
@@ -2096,11 +2106,11 @@ for (const status of ['pending', 'unknown']) {
     await verifyPayment({ method: 'POST', body: { reference } }, response);
 
     assert.equal(response.statusCode, 400);
+    assert.equal(response.body.verified, false);
     assert.equal(
       response.body.transactionStatus,
       status === 'pending' ? 'pending' : 'unknown'
     );
-    assert.equal(response.body.verified, false);
     assert.equal(attempts.get(reference).status, 'payment_initiated');
     assert.equal(
       [...notifications.values()].some((notification) =>
@@ -2250,9 +2260,24 @@ test('regular endpoint cannot skip the Digital Forensics payment page', async ()
   assert.equal(response.statusCode, 400);
 });
 
-test('Digital Forensics verification associates and conditionally marks the persisted registration paid', async (t) => {
-  const { smsNotifications, transactionCalls } =
+test('Digital Forensics verification persists payment success without waiting for receipt generation', async (t) => {
+  const {
+    notifications,
+    smsNotifications,
+    statements,
+    transactionCalls,
+    receiptCalls,
+    setReceiptGenerator
+  } =
     withFakeDigitalForensicsDatabase(t);
+  const originalConsoleError = console.error;
+  console.error = () => {};
+  t.after(() => {
+    console.error = originalConsoleError;
+  });
+  setReceiptGenerator(async () => {
+    throw new Error('test receipt storage failure');
+  });
   const reference = 'DF-345678-ABCDEF';
   const registration = await createAwaitingDigitalForensicsRegistration(
     'course@example.com',
@@ -2274,11 +2299,22 @@ test('Digital Forensics verification associates and conditionally marks the pers
   };
   stubPaystackRequest(t, { status: true, data: transaction });
   const response = createResponse();
+  response.headers = {};
+  response.setHeader = function (name, value) {
+    this.headers[name] = value;
+    return this;
+  };
 
   await verifyPayment({ method: 'POST', body: { reference } }, response);
 
   assert.equal(response.statusCode, 200);
   assert.equal(response.body.verified, true);
+  assert.deepEqual(receiptCalls, []);
+  assert.equal(response.headers['Set-Cookie'], undefined);
+  assert.equal(
+    statements.some((statement) => statement.includes('applicant_sessions')),
+    false
+  );
   const savedRegistration =
     await digitalForensicsStore.findRegistration(registration.id);
   assert.equal(savedRegistration.status, 'payment_verified');
@@ -2286,6 +2322,10 @@ test('Digital Forensics verification associates and conditionally marks the pers
   assert.equal(savedRegistration.expectedAmount, 1500);
   assert.equal(savedRegistration.verifiedTransactionId, transaction.id);
   assert.ok(savedRegistration.paymentVerificationTimestamp);
+  assert.equal(
+    notifications.get(`digital-forensics-payment-success:${registration.id}:${reference}`).eventType,
+    'digital_forensics_payment_success'
+  );
   assert.equal(smsNotifications.size, 1);
   assert.equal(
     [...smsNotifications.values()][0].eventType,
@@ -2298,10 +2338,190 @@ test('Digital Forensics verification associates and conditionally marks the pers
   );
   assert.match(paymentTransaction[0], /UPDATE digital_forensics_registrations/);
   assert.match(paymentTransaction[0], /INSERT INTO email_notification_outbox/);
-  assert.match(paymentTransaction[1], /consent\.event_type = 'grant'/);
+  assert.match(paymentTransaction[1], /JOIN sms_current_consent AS consent/);
 });
 
-test('payment verification suppresses SMS when the latest consent is withdrawn', async (t) => {
+test('duplicate Digital Forensics verification preserves payment state and the single success event', async (t) => {
+  const { notifications, registrations, receiptCalls } =
+    withFakeDigitalForensicsDatabase(t);
+  const reference = 'DF-DUPLICATE-345678';
+  const registration = await createAwaitingDigitalForensicsRegistration(
+    'duplicate-course@example.com',
+    reference
+  );
+  const transaction = {
+    id: 998873,
+    status: 'success',
+    reference,
+    currency: 'GHS',
+    amount: 150000,
+    customer: { email: 'duplicate-course@example.com' },
+    metadata: {
+      track: 'digital_forensics',
+      pricing_option: 'GHS',
+      registration_id: registration.id
+    }
+  };
+  stubPaystackRequest(t, { status: true, data: transaction });
+
+  const firstResponse = createResponse();
+  await verifyPayment({ method: 'POST', body: { reference } }, firstResponse);
+  const persistedTimestamp =
+    registrations.get(registration.id).paymentVerificationTimestamp;
+  const secondResponse = createResponse();
+  await verifyPayment({ method: 'POST', body: { reference } }, secondResponse);
+
+  assert.equal(firstResponse.statusCode, 200);
+  assert.equal(secondResponse.statusCode, 200);
+  assert.equal(firstResponse.body.verified, true);
+  assert.equal(secondResponse.body.verified, true);
+  assert.equal(registrations.get(registration.id).status, 'payment_verified');
+  assert.equal(
+    registrations.get(registration.id).paymentVerificationTimestamp,
+    persistedTimestamp
+  );
+  assert.equal(
+    [...notifications.values()].filter((event) =>
+      event.eventType === 'digital_forensics_payment_success'
+    ).length,
+    1
+  );
+  assert.deepEqual(receiptCalls, []);
+});
+
+test('Digital Forensics verification preserves an existing registration amount', async (t) => {
+  const { registrations } = withFakeDigitalForensicsDatabase(t);
+  const reference = 'DF-LEGACY-345678';
+  const registration = await createAwaitingDigitalForensicsRegistration(
+    'legacy-course@example.com',
+    reference
+  );
+  registrations.get(registration.id).expectedAmount = 1200;
+
+  const transaction = {
+    id: 998876,
+    status: 'success',
+    reference,
+    currency: 'GHS',
+    amount: 120000,
+    customer: { email: 'legacy-course@example.com' },
+    metadata: {
+      track: 'digital_forensics',
+      pricing_option: 'GHS',
+      registration_id: registration.id
+    }
+  };
+  stubPaystackRequest(t, { status: true, data: transaction });
+  const response = createResponse();
+
+  await verifyPayment({ method: 'POST', body: { reference } }, response);
+
+  assert.equal(response.statusCode, 200);
+  const savedRegistration =
+    await digitalForensicsStore.findRegistration(registration.id);
+  assert.equal(savedRegistration.status, 'payment_verified');
+  assert.equal(savedRegistration.expectedAmount, 1200);
+  assert.equal(savedRegistration.verifiedTransactionId, transaction.id);
+});
+
+test('Digital Forensics verification accepts the current international charge', async (t) => {
+  const { registrations } = withFakeDigitalForensicsDatabase(t);
+  const reference = 'DF-INTL-345678';
+  const registration = await createAwaitingDigitalForensicsRegistration(
+    'international-course@example.com',
+    reference
+  );
+  Object.assign(registrations.get(registration.id), {
+    pricingOption: 'USD_REFERENCE',
+    expectedAmount: 1732.5
+  });
+
+  const transaction = {
+    id: 998875,
+    status: 'success',
+    reference,
+    currency: 'GHS',
+    amount: 173250,
+    customer: { email: 'international-course@example.com' },
+    metadata: {
+      track: 'digital_forensics',
+      pricing_option: 'USD_REFERENCE',
+      registration_id: registration.id
+    }
+  };
+  stubPaystackRequest(t, { status: true, data: transaction });
+  const response = createResponse();
+
+  await verifyPayment({ method: 'POST', body: { reference } }, response);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.verified, true);
+  const savedRegistration =
+    await digitalForensicsStore.findRegistration(registration.id);
+  assert.equal(savedRegistration.expectedAmount, 1732.5);
+  assert.equal(savedRegistration.pricingOption, 'USD_REFERENCE');
+  assert.equal(savedRegistration.verifiedTransactionId, transaction.id);
+});
+
+test('Digital Forensics verification checks an old international attempt against its persisted charge after a rate change', async (t) => {
+  const { registrations } = withFakeDigitalForensicsDatabase(t);
+  const reference = 'DF-OLD-RATE-345678';
+  const registration = await createAwaitingDigitalForensicsRegistration(
+    'old-rate@example.com',
+    reference
+  );
+  Object.assign(registrations.get(registration.id), {
+    pricingOption: 'USD_REFERENCE',
+    expectedAmount: 1386
+  });
+  const transaction = {
+    id: 998874,
+    status: 'success',
+    reference,
+    currency: 'GHS',
+    amount: 138600,
+    customer: { email: registration.email },
+    metadata: {
+      track: 'digital_forensics',
+      pricing_option: 'USD_REFERENCE',
+      registration_id: registration.id,
+      reference_currency: 'USD',
+      reference_amount: 120,
+      exchange_rate: 11.55,
+      charge_currency: 'GHS',
+      charge_amount_ghs: 1386,
+      paystack_amount: 138600
+    }
+  };
+  stubPaystackRequest(t, { status: true, data: transaction });
+  const configuredRate = process.env.USD_GHS_RATE;
+  const pricesPath = require.resolve('../lib/payment-prices');
+  const verifierPath = require.resolve('../api/verify-payment');
+  const originalPricesModule = require.cache[pricesPath];
+  const originalVerifierModule = require.cache[verifierPath];
+  process.env.USD_GHS_RATE = '12.5';
+  delete require.cache[pricesPath];
+  delete require.cache[verifierPath];
+  const verifyAtNewRate = require(verifierPath);
+  const response = createResponse();
+
+  try {
+    await verifyAtNewRate({ method: 'POST', body: { reference } }, response);
+  } finally {
+    process.env.USD_GHS_RATE = configuredRate;
+    require.cache[pricesPath] = originalPricesModule;
+    require.cache[verifierPath] = originalVerifierModule;
+  }
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.verified, true);
+  const savedRegistration =
+    await digitalForensicsStore.findRegistration(registration.id);
+  assert.equal(savedRegistration.expectedAmount, 1386);
+  assert.equal(savedRegistration.status, 'payment_verified');
+});
+
+test('payment verification suppresses SMS when current consent state is absent', async (t) => {
   const { smsNotifications, smsConsents } =
     withFakeDigitalForensicsDatabase(t);
   const reference = 'CYB-456790-ABCDEF';
@@ -2311,11 +2531,7 @@ test('payment verification suppresses SMS when the latest consent is withdrawn',
     'incident_response',
     true
   );
-  smsConsents.set(applicant.id, {
-    registrationId: applicant.id,
-    eventType: 'withdrawal',
-    phoneSnapshot: applicant.phone
-  });
+  smsConsents.delete(applicant.id);
   stubPaystackRequest(t, {
     status: true,
     data: {

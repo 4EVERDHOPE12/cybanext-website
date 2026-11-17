@@ -152,6 +152,19 @@
             <span>Continue to payment</span>
             <span class="pay-arrow" aria-hidden="true">→</span>
           </button>
+
+          <div class="receipt-actions" id="receiptActions" hidden>
+            <h3>Your payment receipt</h3>
+            <div class="receipt-action-buttons">
+              <button class="receipt-download-button" id="downloadReceiptButton" type="button">
+                Download receipt
+              </button>
+              <button class="receipt-resend-button" id="resendReceiptButton" type="button">
+                Resend receipt
+              </button>
+            </div>
+            <p id="receiptActionMessage" role="status" aria-live="polite"></p>
+          </div>
         </article>
 
         <aside class="panel-card progress-panel" aria-labelledby="progressTitle">

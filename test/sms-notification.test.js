@@ -192,10 +192,12 @@ test('SMS worker rechecks payment consent and cancels withdrawn or mismatched ev
   }]);
   assert.equal(fetchCount, 0);
   assert.match(statements[0], /FOR UPDATE SKIP LOCKED/);
-  assert.match(statements[1], /sms_consent_events/);
+  assert.match(statements[1], /sms_current_consent/);
+  assert.doesNotMatch(statements[1], /sms_consent_events/);
   assert.match(statements[1], /payment_verified/);
-  assert.match(statements[1], /ORDER BY occurred_at DESC, event_id DESC/);
   assert.match(statements[1], /consent\.phone_snapshot = outbox\.phone_snapshot/);
+  assert.match(statements[1], /regular_track_registration_id = registration\.registration_id/);
+  assert.match(statements[1], /digital_forensics_registration_id = registration\.registration_id/);
   assert.match(statements[2], /claim_token =/);
 });
 

@@ -21,7 +21,10 @@ function createHandler(service = createApplicantAuthService()) {
       }
 
       res.setHeader('Set-Cookie', result.cookie);
-      return res.status(200).json({ authenticated: true });
+      return res.status(200).json({
+        authenticated: true,
+        selectionRequired: result.selectionRequired
+      });
     } catch {
       console.error('Applicant magic-link verification failed.');
       return res.status(503).json({

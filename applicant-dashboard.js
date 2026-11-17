@@ -7,6 +7,10 @@
   const logoutButton = document.getElementById('logoutButton');
   const supportLink = document.getElementById('supportLink');
   const payButton = document.getElementById('payNowButton');
+  const receiptActions = document.getElementById('receiptActions');
+  const downloadReceiptButton = document.getElementById('downloadReceiptButton');
+  const resendReceiptButton = document.getElementById('resendReceiptButton');
+  const receiptActionMessage = document.getElementById('receiptActionMessage');
 
   const welcomeName = document.getElementById('welcomeName');
   const userNameLabel = document.getElementById('userNameLabel');
@@ -33,6 +37,9 @@
   const paymentCard = document.getElementById('paymentCard');
 
   function formatMoney(value, currency = 'GHS') {
+    if (value === null || value === undefined) {
+      return '—';
+    }
     const amount = Number(value);
     if (!Number.isFinite(amount) || !currency) {
       return '—';
@@ -249,6 +256,10 @@
     const canPay = data.canPay === true &&
       ['pending', 'payment_failed'].includes(status);
     const verified = status === 'payment_verified';
+    const canUseReceiptActions = data.track === 'Digital Forensics' &&
+      verified &&
+      data.canDownloadReceipt === true &&
+      data.canResendReceipt === true;
 
     welcomeName.textContent = fullName;
     userNameLabel.textContent = fullName;
@@ -313,6 +324,8 @@
         'Your payment status is unavailable. Please contact support before attempting another payment.';
       payButton.hidden = true;
     }
+    receiptActions.hidden = !canUseReceiptActions;
+    receiptActionMessage.textContent = '';
 
     if (supportLink) {
       supportLink.href = buildSupportMailto(reference);
@@ -336,13 +349,18 @@
         return null;
       }
 
+      const result = await response.json();
+      if (result.selectionRequired === true) {
+        window.location.replace('/applicant-registration-selection.html');
+        return null;
+      }
+
       if (!response.ok) {
         paymentAlertText.textContent =
           'Your dashboard could not be refreshed. Please reload the page or contact support.';
         return null;
       }
 
-      const result = await response.json();
       if (result.authenticated !== true || !result.applicant) {
         window.location.replace('/applicant-login.html');
         return null;
@@ -455,6 +473,72 @@
       paymentAlertText.textContent = error.message ||
         'We could not open payment checkout right now. Please try again.';
     }
+  });
+
+  async function sendReceiptAction(action) {
+    const buttons = [downloadReceiptButton, resendReceiptButton];
+    buttons.forEach((button) => {
+      button.disabled = true;
+    });
+    receiptActionMessage.textContent = 'Processing your receipt request…';
+
+    try {
+      const response = await fetch('/api/applicant-session', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: action === 'download-receipt'
+            ? 'application/pdf, application/json'
+            : 'application/json'
+        },
+        body: JSON.stringify({ action }),
+        cache: 'no-store',
+        credentials: 'same-origin'
+      });
+
+      if (response.status === 401) {
+        window.location.replace('/applicant-login.html');
+        return;
+      }
+
+      if (action === 'download-receipt') {
+        if (!response.ok) {
+          const result = await response.json().catch(() => ({}));
+          throw new Error(result.error || 'Your receipt could not be downloaded.');
+        }
+        const pdf = await response.blob();
+        const url = window.URL.createObjectURL(pdf);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'Cybanext-Payment-Receipt.pdf';
+        link.click();
+        window.setTimeout(() => window.URL.revokeObjectURL(url), 1000);
+        receiptActionMessage.textContent = 'Your receipt download has started.';
+        return;
+      }
+
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(result.error || 'Your receipt email request could not be processed.');
+      }
+      receiptActionMessage.textContent =
+        result.message || 'Your receipt email request has been accepted.';
+    } catch (error) {
+      receiptActionMessage.textContent = error.message ||
+        'We could not process your receipt request. Please try again.';
+    } finally {
+      buttons.forEach((button) => {
+        button.disabled = false;
+      });
+    }
+  }
+
+  downloadReceiptButton?.addEventListener('click', () => {
+    return sendReceiptAction('download-receipt');
+  });
+
+  resendReceiptButton?.addEventListener('click', () => {
+    return sendReceiptAction('resend-receipt');
   });
 
   const applicant = await ensureAuthenticated();

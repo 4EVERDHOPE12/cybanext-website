@@ -23,7 +23,10 @@ function createFakeStore(options = {}) {
   let sessionHash = null;
   let sessionRevoked = false;
   let applicant = options.applicant === undefined
-    ? { registrationId: 'DF-test-registration' }
+    ? {
+      applicantType: 'digital_forensics',
+      registrationId: 'DF-test-registration'
+    }
     : options.applicant;
 
   return {
@@ -59,11 +62,19 @@ function createFakeStore(options = {}) {
       }
       sessionHash = record.sessionTokenHash;
       sessionRevoked = false;
-      return { registrationId: 'DF-test-registration' };
+      return {
+        applicantType: 'digital_forensics',
+        registrationId: 'DF-test-registration',
+        selectionRequired: false
+      };
     },
     async findApplicantSession(hash) {
       return hash === sessionHash && !sessionRevoked
-        ? { registrationId: 'DF-test-registration' }
+        ? {
+          applicantType: 'digital_forensics',
+          registrationId: 'DF-test-registration',
+          selectionRequired: false
+        }
         : null;
     },
     async revokeApplicantSession(hash) {
@@ -237,6 +248,7 @@ test('successful token redemption creates hashed session and secure cookie flags
   const result = await service.verifyLoginToken(token);
 
   assert.equal(result.authenticated, true);
+  assert.equal(result.selectionRequired, false);
   assert.equal(fakeStore.requests.length, 1);
   assert.equal(fakeStore.requests[0].tokenHash, hashToken(token));
   assert.match(fakeStore.requests[0].sessionTokenHash, /^[a-f0-9]{64}$/);
@@ -249,6 +261,25 @@ test('successful token redemption creates hashed session and secure cookie flags
   assert.match(result.cookie, /Expires=/);
   assert.equal(result.cookie.includes(token), false);
   assert.equal(JSON.stringify(logs).includes(result.cookie.split('=')[1].split(';')[0]), false);
+});
+
+test('successful verification flags multi-registration sessions for post-verification selection', async () => {
+  const fakeStore = createFakeStore({
+    redeem: async () => ({
+      registrationId: null,
+      applicantType: null,
+      selectionRequired: true
+    })
+  });
+  const { service } = createService({ store: fakeStore });
+
+  const result = await service.verifyLoginToken(
+    crypto.randomBytes(32).toString('base64url')
+  );
+
+  assert.equal(result.authenticated, true);
+  assert.equal(result.selectionRequired, true);
+  assert.match(result.cookie, /HttpOnly/);
 });
 
 test('concurrent redemption permits only one session', async () => {
@@ -285,7 +316,11 @@ test('session validation hashes the cookie token before looking it up', async ()
   )[1];
   const session = await service.getSession(verification.cookie);
 
-  assert.deepEqual(session, { registrationId: 'DF-test-registration' });
+  assert.deepEqual(session, {
+    applicantType: 'digital_forensics',
+    registrationId: 'DF-test-registration',
+    selectionRequired: false
+  });
   assert.equal(fakeStore.sessionHash, hashToken(sessionToken));
 });
 
@@ -387,7 +422,10 @@ test('applicant session response remains unchanged without dashboard opt-in', as
   const service = {
     async getSession(cookie) {
       assert.equal(cookie, 'session-cookie');
-      return { registrationId: 'DF-test-registration' };
+      return {
+        applicantType: 'digital_forensics',
+        registrationId: 'DF-test-registration'
+      };
     }
   };
 
@@ -404,7 +442,8 @@ test('applicant session response remains unchanged without dashboard opt-in', as
   assert.equal(response.statusCode, 200);
   assert.deepEqual(response.body, {
     authenticated: true,
-    applicationReference: 'DF-test-registration'
+    applicationReference: 'DF-test-registration',
+    applicantType: 'digital_forensics'
   });
   assert.equal(response.headers['Cache-Control'], 'no-store');
   assert.equal(dashboardLookups, 0);
