@@ -61,8 +61,17 @@ BEGIN
     FROM pg_catalog.pg_auth_members membership
     JOIN pg_catalog.pg_roles role ON role.oid = membership.roleid
     JOIN pg_catalog.pg_roles member ON member.oid = membership.member
-    WHERE role.rolname = 'cybanext_sms_consent_retention_owner'
-       OR member.rolname = 'cybanext_sms_consent_retention_owner'
+    JOIN pg_catalog.pg_roles grantor ON grantor.oid = membership.grantor
+    WHERE (
+      role.rolname = 'cybanext_sms_consent_retention_owner'
+      OR member.rolname = 'cybanext_sms_consent_retention_owner'
+    )
+    AND NOT (
+      role.rolname = 'cybanext_sms_consent_retention_owner'
+      AND member.rolname = current_user
+      AND grantor.rolname = 'cloud_admin'
+      AND membership.admin_option = true
+    )
   ) THEN
     RAISE EXCEPTION 'SMS consent retention owner role has unsafe memberships';
   END IF;
